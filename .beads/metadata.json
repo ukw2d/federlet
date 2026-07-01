@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "pimx",
+  "project_id": "7e2ee270-7358-4a27-8e2b-d87f409fd2d6"
+}
