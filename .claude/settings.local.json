@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__beads__create",
+      "mcp__beads__dep",
+      "mcp__beads__ready",
+      "mcp__beads__update"
+    ]
+  }
+}

@@ -1,5 +1,92 @@
+# --- Byte-compiled / optimized / DLLs ---------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 
-# Beads / Dolt files (added by bd init)
+# --- Distribution / packaging ----------------------------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# --- uv (project-local virtualenv + cache) ---------------------------------
+# uv creates .venv by convention; both the venv and its cache belong here.
+.venv/
+.uv-cache/
+
+# --- Test / coverage artifacts ---------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.cache/
+
+# --- Type checking / linters -----------------------------------------------
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# --- Jupyter / IPython -----------------------------------------------------
+.ipynb_checkpoints/
+profile_default/
+
+# --- Secrets & local config (NEVER commit) ---------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.secrets/
+
+# --- Project-specific: Beads / Dolt ----------------------------------------
+# Beads (issue tracker) stores state in a Dolt database. Tracked items are
+# intentionally committed; the local DB and credential key are not.
+.beads-credential-key
 .dolt/
 *.db
-.beads-credential-key
+.beads/locks/
+
+# --- OS junk ---------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# --- Editors ---------------------------------------------------------------
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Logs / runtime --------------------------------------------------------
+*.log
+logs/
+.pid
+nohup.out
+
+# --- Misc build / scratch --------------------------------------------------
+*.bak
+*.tmp
+*.orig
+*.rej
+.idea/
