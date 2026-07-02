@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import base64
-import json
 from typing import Any
 
+import rfc8785
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -28,8 +29,6 @@ def generate_key() -> Ed25519PrivateKey:
 
 def public_jwk(key: Ed25519PrivateKey | Ed25519PublicKey) -> JWK:
     pub = key.public_key() if isinstance(key, Ed25519PrivateKey) else key
-    from cryptography.hazmat.primitives import serialization
-
     raw = pub.public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     )
@@ -43,10 +42,8 @@ def public_key_from_jwk(jwk: JWK) -> Ed25519PublicKey:
 
 
 def canonical_bytes(obj: Any) -> bytes:
-    """Deterministic JSON: sorted keys, compact separators."""
-    return json.dumps(
-        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
+    """Deterministic JSON per RFC 8785 (JCS) so peers in any language agree."""
+    return rfc8785.dumps(obj)
 
 
 def sign_bytes(key: Ed25519PrivateKey, data: bytes) -> str:

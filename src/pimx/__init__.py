@@ -4,6 +4,12 @@ A hubless HTTPS federation protocol for directory nodes (ADR-005).
 """
 
 from .client import FederationClient, SSRFError
+from .admission import (
+    AdmissionDecision,
+    AdmissionPolicy,
+    admit_manifest,
+    domain_evidence_verifier,
+)
 from .crypto import (
     canonical_bytes,
     generate_key,
@@ -26,10 +32,11 @@ from .models import (
     Signature,
     SignedRequest,
 )
+from .protocols import EvidenceVerifier, NonceCache
 from .signing import (
-    NonceCache,
     build_signed_request,
     check_manifest,
+    find_jwk,
     sign_dict,
     sign_manifest,
     verify_dict,
@@ -40,6 +47,10 @@ from .signing import (
 __all__ = [
     "FederationClient",
     "SSRFError",
+    "AdmissionDecision",
+    "AdmissionPolicy",
+    "admit_manifest",
+    "domain_evidence_verifier",
     "canonical_bytes",
     "generate_key",
     "public_jwk",
@@ -60,9 +71,11 @@ __all__ = [
     "QueryResult",
     "Signature",
     "SignedRequest",
+    "EvidenceVerifier",
     "NonceCache",
     "build_signed_request",
     "check_manifest",
+    "find_jwk",
     "sign_dict",
     "sign_manifest",
     "verify_dict",

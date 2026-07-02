@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Callable
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .crypto import JWK, b64u_encode, canonical_bytes, sign_bytes, verify_bytes
-from .models import Manifest, Signature, SignedRequest
+from .models import Manifest, PublicKey, Signature, SignedRequest
+from .protocols import NonceCache
 
 
 def _now() -> datetime:
@@ -23,6 +23,11 @@ def _iso(dt: datetime) -> str:
 
 def sha256_hex(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def find_jwk(keys: list[PublicKey], key_id: str) -> JWK | None:
+    """Look up an advertised public JWK by key_id."""
+    return next((k.public_jwk for k in keys if k.key_id == key_id), None)
 
 
 def sign_dict(payload: dict, key: Ed25519PrivateKey, key_id: str) -> dict:
@@ -45,43 +50,8 @@ def verify_dict(payload: dict, jwk: JWK) -> bool:
 
 
 def sign_manifest(manifest: Manifest, key: Ed25519PrivateKey, key_id: str) -> Manifest:
-    data = sign_dict(manifest.model_dump(exclude_none=True), key, key_id)
+    data = sign_dict(manifest.model_dump(mode="json", exclude_none=True), key, key_id)
     return Manifest.model_validate(data)
-
-
-def _parse_iso(ts: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-
-def _check_window(
-    raw: str | None,
-    *,
-    now: datetime,
-    skew: timedelta,
-    unparseable_reason: str,
-    out_of_window_reason: str,
-    predicate: Callable[[datetime, datetime, timedelta], bool],
-) -> str | None:
-    """Validate an optional ISO timestamp with a skew window.
-
-    Returns None if the field is absent or in-window. `predicate(now, parsed,
-    skew)` should return True when the timestamp is OUT of the acceptable
-    window. For expires_at the predicate is `now > parsed + skew`; for
-    issued_at it is `now < parsed - skew`. Keeping the predicate explicit at
-    the call site (rather than parameterising "which side") makes it
-    impossible to wire up the wrong direction silently.
-    """
-    if not raw:
-        return None
-    parsed = _parse_iso(raw)
-    if parsed is None:
-        return unparseable_reason
-    if predicate(now, parsed, skew):
-        return out_of_window_reason
-    return None
 
 
 def check_manifest(manifest: Manifest, *, max_skew_seconds: int = 300) -> tuple[bool, str]:
@@ -93,34 +63,17 @@ def check_manifest(manifest: Manifest, *, max_skew_seconds: int = 300) -> tuple[
     """
     if manifest.signature is None:
         return False, "unsigned"
-    jwk = next(
-        (k.public_jwk for k in manifest.public_keys
-         if k.key_id == manifest.signature.key_id),
-        None,
-    )
+    jwk = find_jwk(manifest.public_keys, manifest.signature.key_id)
     if jwk is None:
         return False, "unknown_key"
-    if not verify_dict(manifest.model_dump(exclude_none=True), jwk):
+    if not verify_dict(manifest.model_dump(mode="json", exclude_none=True), jwk):
         return False, "bad_signature"
     now = _now()
     skew = timedelta(seconds=max_skew_seconds)
-    reason = _check_window(
-        manifest.expires_at,
-        now=now, skew=skew,
-        unparseable_reason="bad_expires_at",
-        out_of_window_reason="expired",
-        predicate=lambda n, p, s: n > p + s,
-    )
-    if reason is None:
-        reason = _check_window(
-            manifest.issued_at,
-            now=now, skew=skew,
-            unparseable_reason="bad_issued_at",
-            out_of_window_reason="not_yet_valid",
-            predicate=lambda n, p, s: n < p - s,
-        )
-    if reason is not None:
-        return False, reason
+    if manifest.expires_at and now > manifest.expires_at + skew:
+        return False, "expired"
+    if manifest.issued_at and now < manifest.issued_at - skew:
+        return False, "not_yet_valid"
     return True, "ok"
 
 
@@ -157,33 +110,27 @@ def build_signed_request(
         body_sha256=sha256_hex(body),
         source_manifest_revision=source_manifest_revision,
     )
-    data = sign_dict(env.model_dump(exclude_none=True), key, key_id)
+    data = sign_dict(env.model_dump(mode="json", exclude_none=True), key, key_id)
     return SignedRequest.model_validate(data)
 
 
-class NonceCache:
-    """In-memory replay guard. Swap for Redis/DB in production."""
-
-    def __init__(self) -> None:
-        self._seen: set[str] = set()
-
-    def check_and_add(self, nonce: str) -> bool:
-        if nonce in self._seen:
-            return False
-        self._seen.add(nonce)
-        return True
-
-
-def verify_signed_request(
+async def verify_signed_request(
     env: SignedRequest,
     jwk: JWK,
     *,
     self_node_id: str,
     body: bytes = b"",
     max_skew_seconds: int = 300,
-    nonces: NonceCache | None = None,
+    cache: NonceCache | None = None,
 ) -> tuple[bool, str]:
-    """Returns (ok, reason). Caller supplies the signer's current JWK."""
+    """Returns (ok, reason). Caller supplies the signer's current JWK.
+
+    When `cache` is given (any NonceCache the host injects — a cashews Cache
+    backed by mem:// for dev or redis://valkey in prod), the nonce is claimed
+    for replay protection. The claim happens only AFTER the signature verifies
+    and its TTL equals the skew window, so unauthenticated requests can neither
+    burn nonces nor leave the store and the skew window out of sync.
+    """
     if env.signature is None:
         return False, "unsigned"
     if env.target_node_id != self_node_id:
@@ -191,13 +138,17 @@ def verify_signed_request(
     if env.body_sha256 != sha256_hex(body):
         return False, "body_mismatch"
     try:
-        ts = datetime.fromisoformat(env.timestamp.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(env.timestamp)  # 3.11+ parses 'Z'
     except ValueError:
         return False, "bad_timestamp"
     if abs((_now() - ts).total_seconds()) > max_skew_seconds:
         return False, "stale_timestamp"
-    if nonces is not None and not nonces.check_and_add(env.nonce):
-        return False, "replay"
-    if not verify_dict(env.model_dump(exclude_none=True), jwk):
+    if not verify_dict(env.model_dump(mode="json", exclude_none=True), jwk):
         return False, "bad_signature"
+    if cache is not None:
+        claimed = await cache.set(
+            f"pimx:nonce:{env.nonce}", 1, expire=max_skew_seconds, exist=False
+        )
+        if not claimed:
+            return False, "replay"
     return True, "ok"

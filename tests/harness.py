@@ -7,12 +7,16 @@ nodes over real sockets. A production host would do the same wiring in FastAPI.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Awaitable, TypeVar
 from urllib.parse import urlparse
+
+from cashews import Cache
 
 from pimx import (
     IntroduceRequest,
@@ -22,7 +26,6 @@ from pimx import (
     MemberRef,
     MembershipTable,
     MembersResponse,
-    NonceCache,
     PublicKey,
     Query,
     QueryResponse,
@@ -35,6 +38,8 @@ from pimx import (
     verify_manifest,
     verify_signed_request,
 )
+
+T = TypeVar("T")
 
 
 log = logging.getLogger("pimx.node")
@@ -78,11 +83,22 @@ class FederationNode:
         self.manifest = sign_manifest(manifest, self.key, self.key_id)
         self.peers: dict[str, Manifest] = {}
         self.membership_table = MembershipTable()
-        self.nonces = NonceCache()
+        # Replay protection via a real cashews backend (mem:// here; a prod host
+        # would point this at redis:// or valkey). pimx is async, so the sync
+        # request handlers marshal awaits onto this node's dedicated loop.
+        self.cache = Cache()
+        self.cache.setup("mem://")
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
         self._server: ThreadingHTTPServer | None = None
 
     def _log(self, msg: str) -> None:
         log.info("      [%s] %s", self.node_id, msg)
+
+    def _run(self, coro: Awaitable[T]) -> T:
+        """Run a pimx coroutine on this node's loop from a handler thread."""
+        assert self._loop is not None
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
     # --- peer bookkeeping ---------------------------------------------------
 
@@ -127,8 +143,10 @@ class FederationNode:
         )
         if jwk is None:
             return False, "unknown_key"
-        ok, reason = verify_signed_request(
-            env, jwk, self_node_id=self.node_id, body=body, nonces=self.nonces
+        ok, reason = self._run(
+            verify_signed_request(
+                env, jwk, self_node_id=self.node_id, body=body, cache=self.cache
+            )
         )
         mark = "✓" if ok else "✗"
         self._log(
@@ -138,7 +156,9 @@ class FederationNode:
         return ok, reason
 
     def _sign(self, model) -> dict:
-        return sign_dict(model.model_dump(exclude_none=True), self.key, self.key_id)
+        return sign_dict(
+            model.model_dump(mode="json", exclude_none=True), self.key, self.key_id
+        )
 
     # --- handlers -----------------------------------------------------------
 
@@ -239,6 +259,9 @@ class FederationNode:
     # --- server lifecycle ---------------------------------------------------
 
     def start(self) -> "FederationNode":
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._loop_thread.start()
         node = self
         SIG = "X-PIMX-Signature"
 
@@ -293,6 +316,13 @@ class FederationNode:
         if self._server:
             self._server.shutdown()
             self._server.server_close()
+        if self._loop is not None:
+            self._run(self.cache.close())  # cancel cashews' expiry sweeper cleanly
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._loop_thread is not None:
+                self._loop_thread.join(timeout=2)
+            self._loop.close()
+            self._loop = None
 
 
 def _matches(record: dict, q: Query) -> bool:

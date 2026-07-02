@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, field_serializer
 
 from .crypto import JWK
+
+
+def _iso_z(dt: datetime | None) -> str | None:
+    """Canonical wire form: UTC, second precision, 'Z' suffix (ADR-005 §7)."""
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class Signature(BaseModel):
@@ -34,9 +42,13 @@ class Manifest(BaseModel):
     auth_methods: list[str] = Field(default_factory=lambda: ["signed_http"])
     membership: dict[str, str] = Field(default_factory=dict)
     admission_evidence: dict[str, Any] | None = None
-    issued_at: str | None = None
-    expires_at: str | None = None
+    issued_at: AwareDatetime | None = None
+    expires_at: AwareDatetime | None = None
     signature: Signature | None = None
+
+    @field_serializer("issued_at", "expires_at", when_used="json")
+    def _ser_ts(self, dt: datetime | None) -> str | None:
+        return _iso_z(dt)
 
 
 class IntroduceRequest(BaseModel):

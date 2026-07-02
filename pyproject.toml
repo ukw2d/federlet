@@ -7,7 +7,14 @@ dependencies = [
   "cryptography>=42.0.0",
   "httpx>=0.27.0",
   "pydantic>=2.7.0",
+  "rfc8785>=0.1.4",
 ]
+
+# pimx never imports a cache backend; it only calls a NonceCache the host
+# injects. cashews is the recommended backend but not required — install it
+# with `pip install pimx[cashews]` (or bring your own object of that shape).
+[project.optional-dependencies]
+cashews = ["cashews>=7.5.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -18,10 +25,13 @@ packages = ["src/pimx"]
 
 [dependency-groups]
 dev = [
+    "cashews>=7.5.0",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(message)s"
