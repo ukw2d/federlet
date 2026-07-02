@@ -25,6 +25,13 @@ def sha256_hex(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _nonce_cache_key(env: SignedRequest) -> str:
+    return (
+        "pimx:nonce:"
+        f"{env.federation_id}:{env.source_node_id}:{env.target_node_id}:{env.nonce}"
+    )
+
+
 def find_jwk(keys: list[PublicKey], key_id: str) -> JWK | None:
     """Look up an advertised public JWK by key_id."""
     return next((k.public_jwk for k in keys if k.key_id == key_id), None)
@@ -125,11 +132,12 @@ async def verify_signed_request(
 ) -> tuple[bool, str]:
     """Returns (ok, reason). Caller supplies the signer's current JWK.
 
-    When `cache` is given (any NonceCache the host injects — a cashews Cache
-    backed by mem:// for dev or redis://valkey in prod), the nonce is claimed
-    for replay protection. The claim happens only AFTER the signature verifies
-    and its TTL equals the skew window, so unauthenticated requests can neither
-    burn nonces nor leave the store and the skew window out of sync.
+    When `cache` is given (any NonceCache the host injects), the nonce is
+    claimed for replay protection. The claim happens only AFTER the signature
+    verifies and its TTL equals the skew window, so unauthenticated requests can
+    neither burn nonces nor leave the store and the skew window out of sync.
+    If `cache` is omitted, verification still checks authenticity and freshness,
+    but replay protection is disabled.
     """
     if env.signature is None:
         return False, "unsigned"
@@ -147,7 +155,7 @@ async def verify_signed_request(
         return False, "bad_signature"
     if cache is not None:
         claimed = await cache.set(
-            f"pimx:nonce:{env.nonce}", 1, expire=max_skew_seconds, exist=False
+            _nonce_cache_key(env), 1, expire=max_skew_seconds, exist=False
         )
         if not claimed:
             return False, "replay"

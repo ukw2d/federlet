@@ -40,6 +40,21 @@ async def cache():
     await c.close()
 
 
+class RecordingNonceCache:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object, float | None, bool | None]] = []
+
+    async def set(
+        self,
+        key: str,
+        value: object,
+        expire: float | None = None,
+        exist: bool | None = None,
+    ) -> bool:
+        self.calls.append((key, value, expire, exist))
+        return True
+
+
 def _manifest(key, key_id="k1", **extra) -> Manifest:
     data = {
         "node_id": "dir:org-a:prod",
@@ -197,6 +212,38 @@ async def test_signed_request_roundtrip_and_replay(cache):
     # replay of the same nonce is rejected by the cashews claim
     replay = await verify_signed_request(env, jwk, self_node_id="b", body=b'{"x":1}', cache=cache)
     assert replay == (False, "replay")
+
+
+async def test_replay_cache_key_is_scoped_to_request_context():
+    key = generate_key()
+    env = build_signed_request(
+        key,
+        "k1",
+        federation_id="supplier-network-prod",
+        source_node_id="dir:org-a:prod",
+        target_node_id="dir:org-b:prod",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
+    )
+    cache = RecordingNonceCache()
+
+    result = await verify_signed_request(
+        env,
+        public_jwk(key),
+        self_node_id="dir:org-b:prod",
+        body=b'{"x":1}',
+        max_skew_seconds=120,
+        cache=cache,
+    )
+
+    assert result == (True, "ok")
+    assert cache.calls == [(
+        f"pimx:nonce:supplier-network-prod:dir:org-a:prod:dir:org-b:prod:{env.nonce}",
+        1,
+        120,
+        False,
+    )]
 
 
 async def test_bad_signature_does_not_burn_the_nonce(cache):
