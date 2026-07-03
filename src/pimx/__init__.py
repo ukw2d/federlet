@@ -3,27 +3,21 @@
 A hubless HTTPS federation protocol for directory nodes (ADR-005).
 """
 
-from .client import FederationClient, SSRFError
+from .client import Coverage, FederationClient, SkippedPeer, SSRFError
 from .admission import (
     AdmissionDecision,
     AdmissionPolicy,
     admit_manifest,
     domain_evidence_verifier,
 )
-from .crypto import (
-    canonical_bytes,
-    generate_key,
-    public_jwk,
-    public_key_from_jwk,
-    sign_bytes,
-    verify_bytes,
-)
+from .crypto import generate_key, public_jwk
 from .membership import MemberRecord, MembershipTable, PeerState
 from .models import (
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
     MemberRef,
+    Membership,
     MembersResponse,
     PublicKey,
     Query,
@@ -37,26 +31,22 @@ from .signing import (
     build_signed_request,
     check_manifest,
     find_jwk,
-    sign_dict,
     sign_manifest,
-    verify_dict,
     verify_manifest,
     verify_signed_request,
 )
 
 __all__ = [
+    "Coverage",
     "FederationClient",
+    "SkippedPeer",
     "SSRFError",
     "AdmissionDecision",
     "AdmissionPolicy",
     "admit_manifest",
     "domain_evidence_verifier",
-    "canonical_bytes",
     "generate_key",
     "public_jwk",
-    "public_key_from_jwk",
-    "sign_bytes",
-    "verify_bytes",
     "MemberRecord",
     "MembershipTable",
     "PeerState",
@@ -64,6 +54,7 @@ __all__ = [
     "IntroduceResponse",
     "Manifest",
     "MemberRef",
+    "Membership",
     "MembersResponse",
     "PublicKey",
     "Query",
@@ -76,9 +67,7 @@ __all__ = [
     "build_signed_request",
     "check_manifest",
     "find_jwk",
-    "sign_dict",
     "sign_manifest",
-    "verify_dict",
     "verify_manifest",
     "verify_signed_request",
 ]

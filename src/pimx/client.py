@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
-import socket
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
@@ -19,25 +18,32 @@ from .models import (
     QueryResponse,
     QueryResult,
 )
-from .signing import build_signed_request, find_jwk, verify_dict
+from .net import SSRFError, _assert_public_host
+from .signing import build_signed_request, find_jwk, verify_model
 
 SIGNATURE_HEADER = "X-PIMX-Signature"
 
 
-class SSRFError(ValueError):
-    """Raised when a manifest URL resolves to a disallowed address."""
+class ResponseSignatureError(ValueError):
+    """Raised when a peer returns an unsigned or unverifiable response."""
 
 
-def _assert_public_host(url: str, allow_private: bool = False) -> None:
-    host = urlparse(url).hostname
-    if not host:
-        raise SSRFError(f"no host in url: {url}")
-    if allow_private:
-        return
-    for family, _, _, _, sockaddr in socket.getaddrinfo(host, None):
-        ip = ipaddress.ip_address(sockaddr[0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            raise SSRFError(f"{host} resolves to non-public address {ip}")
+@dataclass(frozen=True)
+class SkippedPeer:
+    node_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """Truthful local-view report for a federated_query fan-out (ADR-005 §15)."""
+
+    membership_view: str
+    known_peers: int
+    queried_peers: int
+    responded_peers: int
+    timed_out_peers: list[str]
+    skipped_peers: list[SkippedPeer]
 
 
 def _verify_response(peer: Manifest, resp: QueryResponse) -> bool:
@@ -47,7 +53,7 @@ def _verify_response(peer: Manifest, resp: QueryResponse) -> bool:
     jwk = find_jwk(peer.public_keys, resp.signature.key_id)
     if jwk is None:
         return False
-    return verify_dict(resp.model_dump(mode="json", exclude_none=True), jwk)
+    return verify_model(resp, jwk)
 
 
 class FederationClient:
@@ -122,58 +128,64 @@ class FederationClient:
         self, peer: Manifest, intro: IntroduceRequest
     ) -> IntroduceResponse:
         body = intro.model_dump_json(exclude_none=True).encode()
-        r = await self._send(peer.node_id, "POST", peer.membership["introduce_url"], body=body)
+        r = await self._send(peer.node_id, "POST", peer.membership.introduce_url, body=body)
         return IntroduceResponse.model_validate(r.json())
 
     async def get_members(self, peer: Manifest, since: str | None = None) -> MembersResponse:
         params = {"since": since} if since else None
-        r = await self._send(peer.node_id, "GET", peer.membership["members_url"], params=params)
+        r = await self._send(peer.node_id, "GET", peer.membership.members_url, params=params)
         return MembersResponse.model_validate(r.json())
 
     async def query(self, peer: Manifest, query: Query) -> QueryResponse:
         url = peer.endpoint.rstrip("/") + "/query"
         body = query.model_dump_json(exclude_none=True).encode()
         r = await self._send(peer.node_id, "POST", url, body=body)
-        return QueryResponse.model_validate(r.json())
+        resp = QueryResponse.model_validate(r.json())
+        if not _verify_response(peer, resp):
+            raise ResponseSignatureError("bad_signature")
+        return resp
 
     async def federated_query(
         self, peers: list[Manifest], query: Query
-    ) -> tuple[list[QueryResult], dict]:
+    ) -> tuple[list[QueryResult], Coverage]:
         """Fan out a query to peers concurrently, verify signed responses, merge.
 
         Coverage is a truthful local-view report (ADR-005 §15), not a global
         completeness claim. Peers whose responses fail signature verification
         are counted as skipped.
         """
-        async def one(peer: Manifest) -> tuple[str, str, list[QueryResult] | None]:
+        async def one(peer: Manifest) -> tuple[Manifest, QueryResponse | None, str | None]:
             try:
-                resp = await self.query(peer, query)
-            except (httpx.TimeoutException, httpx.TransportError):
-                return "timed_out", peer.node_id, None
+                return peer, await self.query(peer, query), None
+            except httpx.TimeoutException:
+                return peer, None, "timed_out"
+            except httpx.TransportError:
+                return peer, None, "timed_out"
+            except ResponseSignatureError as exc:
+                return peer, None, str(exc)
             except httpx.HTTPError:
-                return "http_error", peer.node_id, None
-            if not _verify_response(peer, resp):
-                return "bad_signature", peer.node_id, None
-            return "ok", peer.node_id, resp.results
+                return peer, None, "http_error"
+
+        responses = await asyncio.gather(*(one(p) for p in peers))
 
         results: list[QueryResult] = []
-        responded, timed_out, skipped = [], [], []
-        for outcome, node_id, payload in await asyncio.gather(*(one(p) for p in peers)):
-            if outcome == "ok":
-                responded.append(node_id)
-                results.extend(payload or [])
-            elif outcome == "timed_out":
-                timed_out.append(node_id)
-            else:
-                skipped.append({"node_id": node_id, "reason": outcome})
-        coverage = {
-            "membership_view": "local",
-            "known_peers": len(peers),
-            "queried_peers": len(peers),
-            "responded_peers": len(responded),
-            "timed_out_peers": timed_out,
-            "skipped_peers": skipped,
-        }
+        for _, resp, _ in responses:
+            if resp is not None:
+                results.extend(resp.results)
+        coverage = Coverage(
+            membership_view="local",
+            known_peers=len(peers),
+            queried_peers=len(peers),
+            responded_peers=sum(resp is not None for _, resp, _ in responses),
+            timed_out_peers=[
+                peer.node_id for peer, _, reason in responses if reason == "timed_out"
+            ],
+            skipped_peers=[
+                SkippedPeer(node_id=peer.node_id, reason=reason)
+                for peer, _, reason in responses
+                if reason not in (None, "timed_out")
+            ],
+        )
         return results, coverage
 
     async def fetch_record(

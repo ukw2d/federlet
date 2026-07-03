@@ -6,6 +6,7 @@ import base64
 from typing import Any
 
 import rfc8785
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -51,8 +52,6 @@ def sign_bytes(key: Ed25519PrivateKey, data: bytes) -> str:
 
 
 def verify_bytes(jwk: JWK, sig: str, data: bytes) -> bool:
-    from cryptography.exceptions import InvalidSignature
-
     try:
         public_key_from_jwk(jwk).verify(b64u_decode(sig), data)
         return True

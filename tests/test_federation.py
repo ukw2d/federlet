@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
 from harness import FederationNode
 from pimx import FederationClient, Manifest, Query, IntroduceRequest
 from pimx.crypto import b64u_encode
-from pimx.signing import _now, _iso, sign_dict
+from pimx.signing import sign_dict
 
 FED = "supplier-network-prod"
 
@@ -38,7 +39,7 @@ def _intro_for(newcomer: FederationNode) -> IntroduceRequest:
         manifest_url=newcomer.manifest_url,
         manifest=newcomer.manifest,
         nonce=b64u_encode(uuid.uuid4().bytes),
-        timestamp=_iso(_now()),
+        timestamp=datetime.now(timezone.utc),
     )
     data = sign_dict(
         intro.model_dump(mode="json", exclude_none=True), newcomer.key, newcomer.key_id
@@ -92,9 +93,9 @@ async def test_two_stores_query_and_fetch(org_a, org_b):
     log.info("    coverage: %s", coverage)
 
     assert [r.record_id for r in results] == ["agent:org-b:invoice-agent"]
-    assert coverage["responded_peers"] == 1
-    assert coverage["timed_out_peers"] == []
-    assert coverage["membership_view"] == "local"
+    assert coverage.responded_peers == 1
+    assert coverage.timed_out_peers == []
+    assert coverage.membership_view == "local"
 
     step("A fetches the full record from its owner (Org B)")
     record = await client.fetch_record(org_b.manifest, "agent:org-b:invoice-agent")
@@ -152,8 +153,8 @@ async def test_third_store_joins_and_becomes_queryable(org_a, org_b):
         log.info("    A received cards: %s", sorted(owners))
         log.info("    coverage: %s", coverage)
         assert "agent:org-c:supplier-agent" in owners
-        assert coverage["known_peers"] == 2  # B and C
-        assert coverage["responded_peers"] == 2
+        assert coverage.known_peers == 2  # B and C
+        assert coverage.responded_peers == 2
         await a_client.close()
         await c_client.close()
     finally:

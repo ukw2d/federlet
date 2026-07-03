@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
-from pydantic import AwareDatetime, BaseModel, Field, field_serializer
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
 
 from .crypto import JWK
-
-
-def _iso_z(dt: datetime | None) -> str | None:
-    """Canonical wire form: UTC, second precision, 'Z' suffix (ADR-005 §7)."""
-    if dt is None:
-        return None
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+from ._time import iso_z
 
 
 class Signature(BaseModel):
@@ -30,6 +24,16 @@ class PublicKey(BaseModel):
     public_jwk: JWK
 
 
+class Membership(BaseModel):
+    """Membership-exchange endpoints advertised by a manifest (ADR-005 §7)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    introduce_url: str
+    members_url: str
+    revocations_url: str | None = None
+
+
 class Manifest(BaseModel):
     node_id: str
     org_id: str
@@ -40,7 +44,7 @@ class Manifest(BaseModel):
     revision: int = 0
     public_keys: list[PublicKey] = Field(default_factory=list)
     auth_methods: list[str] = Field(default_factory=lambda: ["signed_http"])
-    membership: dict[str, str] = Field(default_factory=dict)
+    membership: Membership
     admission_evidence: dict[str, Any] | None = None
     issued_at: AwareDatetime | None = None
     expires_at: AwareDatetime | None = None
@@ -48,7 +52,7 @@ class Manifest(BaseModel):
 
     @field_serializer("issued_at", "expires_at", when_used="json")
     def _ser_ts(self, dt: datetime | None) -> str | None:
-        return _iso_z(dt)
+        return iso_z(dt)
 
 
 class IntroduceRequest(BaseModel):
@@ -57,8 +61,12 @@ class IntroduceRequest(BaseModel):
     manifest: Manifest
     requested_disclosure: str = "federation"
     nonce: str
-    timestamp: str
+    timestamp: AwareDatetime
     signature: Signature | None = None
+
+    @field_serializer("timestamp", when_used="json")
+    def _ser_ts(self, dt: datetime) -> str:
+        return iso_z(dt) or ""
 
 
 class IntroduceResponse(BaseModel):
@@ -95,11 +103,15 @@ class SignedRequest(BaseModel):
     target_node_id: str
     method: str
     path: str
-    timestamp: str
+    timestamp: AwareDatetime
     nonce: str
     body_sha256: str
     source_manifest_revision: int = 0
     signature: Signature | None = None
+
+    @field_serializer("timestamp", when_used="json")
+    def _ser_ts(self, dt: datetime) -> str:
+        return iso_z(dt) or ""
 
 
 class Query(BaseModel):

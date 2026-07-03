@@ -6,7 +6,13 @@
       "mcp__beads__ready",
       "mcp__beads__update",
       "Bash(bd create *)",
-      "Bash(bd update *)"
+      "Bash(bd update *)",
+      "Bash(bd dep *)",
+      "Bash(bd ready *)",
+      "Bash(bd show *)",
+      "Bash(grep -iA3 \"depend\\\\|block\")",
+      "Bash(uv run *)",
+      "Bash(bd close *)"
     ]
   }
 }

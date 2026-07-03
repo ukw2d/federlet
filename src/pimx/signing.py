@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
+from typing import TypeVar
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from pydantic import BaseModel
 
+from ._time import utc_now
 from .crypto import JWK, b64u_encode, canonical_bytes, sign_bytes, verify_bytes
 from .models import Manifest, PublicKey, Signature, SignedRequest
 from .protocols import NonceCache
 
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _iso(dt: datetime) -> str:
-    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+M = TypeVar("M", bound=BaseModel)
 
 
 def sha256_hex(data: bytes) -> str:
@@ -41,8 +38,9 @@ def sign_dict(payload: dict, key: Ed25519PrivateKey, key_id: str) -> dict:
     """Attach a detached signature over the payload minus its signature field."""
     body = {k: v for k, v in payload.items() if k != "signature"}
     sig = sign_bytes(key, canonical_bytes(body))
-    payload["signature"] = Signature(key_id=key_id, sig=sig).model_dump()
-    return payload
+    signed = dict(payload)
+    signed["signature"] = Signature(key_id=key_id, sig=sig).model_dump()
+    return signed
 
 
 def verify_dict(payload: dict, jwk: JWK) -> bool:
@@ -53,12 +51,21 @@ def verify_dict(payload: dict, jwk: JWK) -> bool:
     return verify_bytes(jwk, sig["sig"], canonical_bytes(body))
 
 
+def sign_model(model: M, key: Ed25519PrivateKey, key_id: str) -> M:
+    """Sign a model's canonical JSON and return the re-validated, signed copy."""
+    data = sign_dict(model.model_dump(mode="json", exclude_none=True), key, key_id)
+    return model.__class__.model_validate(data)
+
+
+def verify_model(model: BaseModel, jwk: JWK) -> bool:
+    return verify_dict(model.model_dump(mode="json", exclude_none=True), jwk)
+
+
 # --- Manifests ---------------------------------------------------------------
 
 
 def sign_manifest(manifest: Manifest, key: Ed25519PrivateKey, key_id: str) -> Manifest:
-    data = sign_dict(manifest.model_dump(mode="json", exclude_none=True), key, key_id)
-    return Manifest.model_validate(data)
+    return sign_model(manifest, key, key_id)
 
 
 def check_manifest(manifest: Manifest, *, max_skew_seconds: int = 300) -> tuple[bool, str]:
@@ -73,9 +80,9 @@ def check_manifest(manifest: Manifest, *, max_skew_seconds: int = 300) -> tuple[
     jwk = find_jwk(manifest.public_keys, manifest.signature.key_id)
     if jwk is None:
         return False, "unknown_key"
-    if not verify_dict(manifest.model_dump(mode="json", exclude_none=True), jwk):
+    if not verify_model(manifest, jwk):
         return False, "bad_signature"
-    now = _now()
+    now = utc_now()
     skew = timedelta(seconds=max_skew_seconds)
     if manifest.expires_at and now > manifest.expires_at + skew:
         return False, "expired"
@@ -112,13 +119,12 @@ def build_signed_request(
         target_node_id=target_node_id,
         method=method.upper(),
         path=path,
-        timestamp=_iso(_now()),
+        timestamp=utc_now(),
         nonce=b64u_encode(uuid.uuid4().bytes),
         body_sha256=sha256_hex(body),
         source_manifest_revision=source_manifest_revision,
     )
-    data = sign_dict(env.model_dump(mode="json", exclude_none=True), key, key_id)
-    return SignedRequest.model_validate(data)
+    return sign_model(env, key, key_id)
 
 
 async def verify_signed_request(
@@ -145,13 +151,9 @@ async def verify_signed_request(
         return False, "wrong_target"
     if env.body_sha256 != sha256_hex(body):
         return False, "body_mismatch"
-    try:
-        ts = datetime.fromisoformat(env.timestamp)  # 3.11+ parses 'Z'
-    except ValueError:
-        return False, "bad_timestamp"
-    if abs((_now() - ts).total_seconds()) > max_skew_seconds:
+    if abs((utc_now() - env.timestamp).total_seconds()) > max_skew_seconds:
         return False, "stale_timestamp"
-    if not verify_dict(env.model_dump(mode="json", exclude_none=True), jwk):
+    if not verify_model(env, jwk):
         return False, "bad_signature"
     if cache is not None:
         claimed = await cache.set(

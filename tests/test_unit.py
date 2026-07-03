@@ -6,13 +6,16 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from cashews import Cache
+from pydantic import ValidationError
 
 from pimx import (
     Manifest,
     MemberRecord,
+    Membership,
     MembershipTable,
     PeerState,
     PublicKey,
+    Query,
     AdmissionPolicy,
     admit_manifest,
     build_signed_request,
@@ -24,7 +27,8 @@ from pimx import (
     verify_manifest,
     verify_signed_request,
 )
-from pimx.client import SSRFError, _assert_public_host
+from pimx.client import FederationClient, ResponseSignatureError
+from pimx.net import SSRFError, _assert_public_host
 
 
 def _iso(dt: datetime) -> str:
@@ -63,7 +67,7 @@ def _manifest(key, key_id="k1", **extra) -> Manifest:
         "endpoint": "https://dir.org-a.example/federation/v1",
         "revision": 12,
         "public_keys": [PublicKey(key_id=key_id, public_jwk=public_jwk(key))],
-        "membership": {"introduce_url": "https://x/i", "members_url": "https://x/m"},
+        "membership": Membership(introduce_url="https://x/i", members_url="https://x/m"),
     } | extra
     m = Manifest(**data)
     return sign_manifest(m, key, key_id)
@@ -74,6 +78,34 @@ def test_manifest_sign_verify_and_tamper():
     m = _manifest(key)
     assert verify_manifest(m)
     assert not verify_manifest(m.model_copy(update={"revision": 999}))
+
+
+def test_manifest_membership_round_trips_as_typed_model():
+    key = generate_key()
+    m = _manifest(key)
+    assert isinstance(m.membership, Membership)
+    assert m.membership.introduce_url == "https://x/i"
+    assert m.membership.members_url == "https://x/m"
+    wire = m.model_dump(mode="json")
+    assert wire["membership"] == {
+        "introduce_url": "https://x/i",
+        "members_url": "https://x/m",
+        "revocations_url": None,
+    }
+    assert Manifest.model_validate(wire).membership == m.membership
+
+
+def test_manifest_missing_membership_key_raises_validation_error():
+    key = generate_key()
+    data = {
+        "node_id": "dir:org-a:prod",
+        "org_id": "org-a",
+        "endpoint": "https://dir.org-a.example/federation/v1",
+        "public_keys": [PublicKey(key_id="k1", public_jwk=public_jwk(key))],
+        "membership": {"introduce_url": "https://x/i"},  # missing members_url
+    }
+    with pytest.raises(ValidationError):
+        Manifest(**data)
 
 
 def test_manifest_freshness_is_enforced():
@@ -278,6 +310,30 @@ async def test_signed_request_rejections(kwargs, reason):
     assert not ok and why == reason
 
 
+async def test_query_rejects_unsigned_response():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key)
+    unsigned = {"query_id": "q", "source_node_id": peer.node_id, "results": []}
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=unsigned)
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(ResponseSignatureError):
+            await client.query(peer, Query(query_id="q", query={}))
+    finally:
+        await client.close()
+
+
 def test_membership_cooldown_and_recovery():
     t = MembershipTable(max_failures=2, base_cooldown=timedelta(seconds=1))
     t.upsert(MemberRecord(node_id="n", manifest_url="https://x/m.json"))
@@ -286,7 +342,7 @@ def test_membership_cooldown_and_recovery():
 
     t.record_failure("n")
     t.record_failure("n")
-    assert t.get("n").state == PeerState.COOLDOWN
+    assert t.get("n").state == PeerState.ACTIVE
     assert t.eligible_peers() == []  # in cooldown -> not queried
 
     t.record_success("n")

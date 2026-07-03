@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from .models import Manifest
+from .net import is_disallowed_ip
 from .protocols import EvidenceVerifier
 from .signing import check_manifest
 
@@ -72,11 +73,15 @@ async def domain_evidence_verifier(manifest: Manifest) -> tuple[bool, str]:
     domain = ev.get("domain")
     if not isinstance(domain, str) or not domain:
         return False, "bad_domain_evidence"
-    host = (urlparse(manifest.endpoint).hostname or "").lower().rstrip(".")
-    domain = domain.lower().rstrip(".")
-    if host == domain or host.endswith("." + domain):
+    if _host_in_domain(urlparse(manifest.endpoint).hostname or "", domain):
         return True, "ok"
     return False, "domain_mismatch"
+
+
+def _host_in_domain(host: str, domain: str) -> bool:
+    host = host.lower().rstrip(".")
+    domain = domain.lower().rstrip(".")
+    return host == domain or host.endswith("." + domain)
 
 
 def _check_endpoint(endpoint: str, policy: AdmissionPolicy) -> str | None:
@@ -87,17 +92,13 @@ def _check_endpoint(endpoint: str, policy: AdmissionPolicy) -> str | None:
     if policy.require_https and parsed.scheme != "https":
         return "https_required"
     if policy.allowed_endpoint_domains and not any(
-        host == d.lower().rstrip(".") or host.endswith("." + d.lower().rstrip("."))
-        for d in policy.allowed_endpoint_domains
+        _host_in_domain(host, d) for d in policy.allowed_endpoint_domains
     ):
         return "endpoint_domain_denied"
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return None
-    if (
-        not policy.allow_private_hosts
-        and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved)
-    ):
+    if not policy.allow_private_hosts and is_disallowed_ip(ip):
         return "private_endpoint_denied"
     return None

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import Enum
+
+from ._time import utc_now
 
 
 class PeerState(str, Enum):
@@ -13,10 +15,6 @@ class PeerState(str, Enum):
     STALE_MANIFEST = "stale_manifest"
     REJECTED = "rejected"
     REVOKED = "revoked"
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -32,7 +30,7 @@ class MemberRecord:
     last_refresh: datetime | None = None
 
     def is_eligible(self, now: datetime | None = None) -> bool:
-        now = now or _now()
+        now = now or utc_now()
         if self.state != PeerState.ACTIVE:
             return False
         if self.accepted_until and now >= self.accepted_until:
@@ -91,15 +89,13 @@ class MembershipTable:
         rec = self._peers.get(node_id)
         if rec is None:
             return
-        now = now or _now()
+        now = now or utc_now()
         rec.failures += 1
         backoff = min(self.base_cooldown * (2 ** (rec.failures - 1)), self.max_cooldown)
         rec.cooldown_until = now + backoff
-        if rec.failures >= self.max_failures:
-            rec.state = PeerState.COOLDOWN
 
     def eligible_peers(self, now: datetime | None = None) -> list[MemberRecord]:
-        now = now or _now()
+        now = now or utc_now()
         return [r for r in self._peers.values() if r.is_eligible(now)]
 
     def _set_state(self, node_id: str, state: PeerState) -> None:

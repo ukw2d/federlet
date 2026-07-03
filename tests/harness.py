@@ -24,6 +24,7 @@ from pimx import (
     Manifest,
     MemberRecord,
     MemberRef,
+    Membership,
     MembershipTable,
     MembersResponse,
     PublicKey,
@@ -33,11 +34,11 @@ from pimx import (
     SignedRequest,
     generate_key,
     public_jwk,
-    sign_dict,
     sign_manifest,
     verify_manifest,
     verify_signed_request,
 )
+from pimx.signing import sign_model
 
 T = TypeVar("T")
 
@@ -75,10 +76,10 @@ class FederationNode:
             protocol_versions=["agent-directory-federation/1"],
             revision=1,
             public_keys=[PublicKey(key_id=self.key_id, public_jwk=public_jwk(self.key))],
-            membership={
-                "introduce_url": f"{self.endpoint}/members/introduce",
-                "members_url": f"{self.endpoint}/members",
-            },
+            membership=Membership(
+                introduce_url=f"{self.endpoint}/members/introduce",
+                members_url=f"{self.endpoint}/members",
+            ),
         )
         self.manifest = sign_manifest(manifest, self.key, self.key_id)
         self.peers: dict[str, Manifest] = {}
@@ -156,8 +157,8 @@ class FederationNode:
         return ok, reason
 
     def _sign(self, model) -> dict:
-        return sign_dict(
-            model.model_dump(mode="json", exclude_none=True), self.key, self.key_id
+        return sign_model(model, self.key, self.key_id).model_dump(
+            mode="json", exclude_none=True
         )
 
     # --- handlers -----------------------------------------------------------
@@ -200,7 +201,7 @@ class FederationNode:
             MemberRef(
                 node_id=p.node_id,
                 org_id=p.org_id,
-                manifest_url=p.membership.get("introduce_url", "").replace(
+                manifest_url=p.membership.introduce_url.replace(
                     "/federation/v1/members/introduce",
                     "/.well-known/agent-directory.json",
                 ),
