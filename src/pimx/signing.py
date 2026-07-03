@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from ._time import utc_now
 from .crypto import JWK, b64u_encode, canonical_bytes, sign_bytes, verify_bytes
 from .models import Manifest, PublicKey, Signature, SignedRequest
-from .protocols import NonceCache
+from .protocols.nonce import NonceCache
 
 M = TypeVar("M", bound=BaseModel)
 

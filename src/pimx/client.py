@@ -18,7 +18,7 @@ from .models import (
     QueryResponse,
     QueryResult,
 )
-from .net import SSRFError, _assert_public_host
+from .net import _assert_public_host
 from .signing import build_signed_request, find_jwk, verify_model
 
 SIGNATURE_HEADER = "X-PIMX-Signature"
@@ -157,14 +157,10 @@ class FederationClient:
         async def one(peer: Manifest) -> tuple[Manifest, QueryResponse | None, str | None]:
             try:
                 return peer, await self.query(peer, query), None
-            except httpx.TimeoutException:
-                return peer, None, "timed_out"
-            except httpx.TransportError:
+            except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPError):
                 return peer, None, "timed_out"
             except ResponseSignatureError as exc:
                 return peer, None, str(exc)
-            except httpx.HTTPError:
-                return peer, None, "http_error"
 
         responses = await asyncio.gather(*(one(p) for p in peers))
 

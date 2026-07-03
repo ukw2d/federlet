@@ -3,15 +3,17 @@
 A hubless HTTPS federation protocol for directory nodes (ADR-005).
 """
 
-from .client import Coverage, FederationClient, SkippedPeer, SSRFError
+from .client import Coverage, FederationClient, SkippedPeer
 from .admission import (
     AdmissionDecision,
     AdmissionPolicy,
+    EvidenceVerifier,
     admit_manifest,
     domain_evidence_verifier,
 )
 from .crypto import generate_key, public_jwk
 from .membership import MemberRecord, MembershipTable, PeerState
+from .net import SSRFError
 from .models import (
     IntroduceRequest,
     IntroduceResponse,
@@ -26,7 +28,7 @@ from .models import (
     Signature,
     SignedRequest,
 )
-from .protocols import EvidenceVerifier, NonceCache
+from .protocols import NonceCache
 from .signing import (
     build_signed_request,
     check_manifest,

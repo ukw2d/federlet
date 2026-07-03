@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass, field
+from typing import Protocol
 from urllib.parse import urlparse
 
 from .models import Manifest
 from .net import is_disallowed_ip
-from .protocols import EvidenceVerifier
 from .signing import check_manifest
+
+
+class EvidenceVerifier(Protocol):
+    async def __call__(self, manifest: Manifest) -> tuple[bool, str]:
+        """Verify host-owned admission evidence for a manifest (may do I/O)."""
+        ...
 
 
 @dataclass(frozen=True)
