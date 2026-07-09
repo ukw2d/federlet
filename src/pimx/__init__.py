@@ -6,6 +6,7 @@ A hubless HTTPS federation protocol for directory nodes (ADR-005).
 from .client import (
     SIGNATURE_HEADER,
     FederationClient,
+    MissingCapabilitySummaryEndpointError,
     ManifestVerificationError,
     MissingRevocationsEndpointError,
     ResponseSignatureError,
@@ -14,7 +15,10 @@ from .admission import (
     AdmissionDecision,
     AdmissionPolicy,
     EvidenceVerifier,
+    KeyContinuityDecision,
+    KeyContinuityPolicy,
     admit_manifest,
+    check_key_continuity,
     domain_evidence_verifier,
 )
 from .audit import audit_record
@@ -38,6 +42,7 @@ from .membership import (
 from .net import SSRFError
 from .models import (
     AdmissionEvidence,
+    CapabilitySummary,
     Disclosure,
     DomainProofEvidence,
     GenericAdmissionEvidence,
@@ -79,6 +84,7 @@ from .signing import (
 
 __all__ = [
     "FederationClient",
+    "MissingCapabilitySummaryEndpointError",
     "ManifestVerificationError",
     "MissingRevocationsEndpointError",
     "ResponseSignatureError",
@@ -87,7 +93,10 @@ __all__ = [
     "AdmissionDecision",
     "AdmissionPolicy",
     "admit_manifest",
+    "check_key_continuity",
     "domain_evidence_verifier",
+    "KeyContinuityDecision",
+    "KeyContinuityPolicy",
     "audit_record",
     "JWK",
     "b64u_decode",
@@ -103,6 +112,7 @@ __all__ = [
     "apply_revocation_notice",
     "disclose_members",
     "AdmissionEvidence",
+    "CapabilitySummary",
     "Disclosure",
     "DomainProofEvidence",
     "GenericAdmissionEvidence",

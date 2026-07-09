@@ -152,6 +152,22 @@ class RevocationsResponse(BaseModel):
     signature: Signature | None = None
 
 
+class CapabilitySummary(BaseModel):
+    node_id: str
+    summary_version: int
+    record_types: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+    skills_top: list[str] = Field(default_factory=list)
+    coverage_text: str
+    updated_at: AwareDatetime
+    expires_at: AwareDatetime
+    signature: Signature | None = None
+
+    @field_serializer("updated_at", "expires_at", when_used="json")
+    def _ser_ts(self, dt: datetime) -> str:
+        return iso_z(dt) or ""
+
+
 class SignedRequest(BaseModel):
     """Detached signed-request envelope sent alongside an HTTP call."""
 

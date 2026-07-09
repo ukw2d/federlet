@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from pimx import (
     AdmissionEvidence,
+    CapabilitySummary,
     JWK,
     Disclosure,
     DomainProofEvidence,
@@ -24,6 +25,7 @@ from pimx import (
     Membership,
     MembershipStore,
     MembershipTable,
+    MissingCapabilitySummaryEndpointError,
     MissingRevocationsEndpointError,
     PeerState,
     PublicKey,
@@ -42,9 +44,11 @@ from pimx import (
     build_signed_request,
     canonical_bytes,
     check_body_size,
+    check_key_continuity,
     check_manifest,
     domain_evidence_verifier,
     generate_key,
+    KeyContinuityPolicy,
     public_jwk,
     public_key_from_jwk,
     sha256_hex,
@@ -53,6 +57,7 @@ from pimx import (
     TokenBucketRateLimiter,
     disclose_members,
     verify_manifest,
+    verify_model,
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,
@@ -344,6 +349,86 @@ async def test_domain_evidence_verifier_rejects_endpoint_outside_domain():
     assert await domain_evidence_verifier(manifest) == (False, "domain_mismatch")
 
 
+async def test_key_continuity_accepts_no_key_change():
+    key = generate_key()
+    old_manifest = _manifest(key, key_id="org-a-k1", revision=12)
+    new_manifest = _manifest(key, key_id="org-a-k1", revision=13)
+
+    decision = await check_key_continuity(old_manifest, new_manifest)
+
+    assert decision.action == "accept"
+    assert decision.reason == "ok"
+
+
+async def test_key_continuity_accepts_rotation_signed_by_old_key():
+    old_key, new_key = generate_key(), generate_key()
+    old_manifest = _manifest(old_key, key_id="org-a-k1", revision=12)
+    new_manifest = _manifest(
+        old_key,
+        key_id="org-a-k1",
+        revision=13,
+        public_keys=[
+            PublicKey(key_id="org-a-k1", public_jwk=public_jwk(old_key)),
+            PublicKey(key_id="org-a-k2", public_jwk=public_jwk(new_key)),
+        ],
+    )
+
+    decision = await check_key_continuity(old_manifest, new_manifest)
+
+    assert decision.action == "accept"
+    assert decision.reason == "signed_rotation"
+
+
+async def test_key_continuity_quarantines_unauthorized_rotation():
+    old_key, new_key = generate_key(), generate_key()
+    old_manifest = _manifest(old_key, key_id="org-a-k1", revision=12)
+    new_manifest = _manifest(new_key, key_id="org-a-k2", revision=13)
+
+    decision = await check_key_continuity(old_manifest, new_manifest)
+
+    assert decision.action == "quarantine"
+    assert decision.reason == "stale_manifest"
+
+
+async def test_key_continuity_accepts_evidence_authorized_rotation():
+    async def evidence_verifier(manifest: Manifest) -> tuple[bool, str]:
+        assert manifest.admission_evidence is not None
+        return True, "ok"
+
+    old_key, new_key = generate_key(), generate_key()
+    old_manifest = _manifest(old_key, key_id="org-a-k1", revision=12)
+    new_manifest = _manifest(
+        new_key,
+        key_id="org-a-k2",
+        revision=13,
+        admission_evidence={"type": "domain_proof", "domain": "org-a.example"},
+    )
+
+    decision = await check_key_continuity(
+        old_manifest,
+        new_manifest,
+        KeyContinuityPolicy(evidence_verifier=evidence_verifier),
+    )
+
+    assert decision.action == "accept"
+    assert decision.reason == "admission_evidence"
+
+
+async def test_key_continuity_rejects_when_local_policy_denies_rotation():
+    old_key, new_key = generate_key(), generate_key()
+    old_manifest = _manifest(old_key, key_id="org-a-k1", revision=12)
+    new_manifest = _manifest(new_key, key_id="org-a-k2", revision=13)
+
+    decision = await check_key_continuity(
+        old_manifest,
+        new_manifest,
+        KeyContinuityPolicy(allow_key_rotation=False),
+    )
+
+    assert decision.action == "reject"
+    assert decision.reason == "rotation_denied"
+
+
 def test_manifest_wrong_key_fails():
     m = _manifest(generate_key())
     # re-sign body with a different key but keep advertised key -> mismatch
@@ -385,6 +470,30 @@ def test_revocation_notice_round_trips_and_verifies():
     assert wire["expires_at"] == "2026-07-10T10:00:00Z"
     assert verify_revocation_notice(RevocationNotice.model_validate(wire), public_jwk(key))
     assert RevocationsResponse(source_node_id="dir:org-a:prod", notices=[notice])
+
+
+def test_capability_summary_round_trips_and_verifies():
+    key = generate_key()
+    summary = sign_model(
+        CapabilitySummary(
+            node_id="dir:org-a:prod",
+            summary_version=1,
+            record_types=["supplier"],
+            domains=["manufacturing"],
+            skills_top=["cnc"],
+            coverage_text="Supplier catalogue",
+            updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc),
+            expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc),
+        ),
+        key,
+        "k1",
+    )
+
+    wire = summary.model_dump(mode="json")
+    assert wire["updated_at"] == "2026-07-09T10:00:00Z"
+    assert wire["expires_at"] == "2026-07-10T10:00:00Z"
+    assert CapabilitySummary.model_validate(wire) == summary
+    assert verify_model(summary, public_jwk(key))
 
 
 def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
@@ -766,6 +875,112 @@ async def test_get_revocations_requires_advertised_endpoint():
     try:
         with pytest.raises(MissingRevocationsEndpointError, match="missing_revocations_url"):
             await client.get_revocations(peer)
+    finally:
+        await client.close()
+
+
+async def test_get_capability_summary_accepts_signed_response():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key, capability_summary_url="https://x/capability")
+    signed = sign_model(
+        CapabilitySummary(
+            node_id=peer.node_id,
+            summary_version=1,
+            record_types=["supplier"],
+            domains=["manufacturing"],
+            skills_top=["cnc"],
+            coverage_text="Supplier catalogue",
+            updated_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+        peer_key,
+        "k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/capability"
+        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        assert await client.get_capability_summary(peer) == signed
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("response_factory", [
+    lambda peer, _: CapabilitySummary(
+        node_id=peer.node_id,
+        summary_version=1,
+        coverage_text="Supplier catalogue",
+        updated_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    ),
+    lambda peer, bad_key: sign_model(
+        CapabilitySummary(
+            node_id=peer.node_id,
+            summary_version=1,
+            coverage_text="Supplier catalogue",
+            updated_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+        bad_key,
+        "k1",
+    ),
+])
+async def test_get_capability_summary_rejects_unsigned_or_bad_response(response_factory):
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key, capability_summary_url="https://x/capability")
+    response = response_factory(peer, generate_key())
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(ResponseSignatureError):
+            await client.get_capability_summary(peer)
+    finally:
+        await client.close()
+
+
+async def test_get_capability_summary_requires_advertised_endpoint():
+    import httpx
+
+    peer = _manifest(generate_key())
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("request should not be sent")
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(
+            MissingCapabilitySummaryEndpointError,
+            match="missing_capability_summary_url",
+        ):
+            await client.get_capability_summary(peer)
     finally:
         await client.close()
 

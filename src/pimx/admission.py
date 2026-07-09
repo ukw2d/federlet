@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 from urllib.parse import urlparse
 
 from .models import DomainProofEvidence, Manifest
 from .net import is_disallowed_ip
-from .signing import check_manifest
+from .signing import check_manifest, verify_model
 
 
 class EvidenceVerifier(Protocol):
@@ -33,6 +33,18 @@ class AdmissionPolicy:
 @dataclass(frozen=True)
 class AdmissionDecision:
     accepted: bool
+    reason: str = "ok"
+
+
+@dataclass(frozen=True)
+class KeyContinuityPolicy:
+    allow_key_rotation: bool = True
+    evidence_verifier: EvidenceVerifier | None = None
+
+
+@dataclass(frozen=True)
+class KeyContinuityDecision:
+    action: Literal["accept", "quarantine", "reject"]
     reason: str = "ok"
 
 
@@ -63,6 +75,42 @@ async def admit_manifest(
         if not ok:
             return AdmissionDecision(False, reason)
     return AdmissionDecision(True)
+
+
+async def check_key_continuity(
+    old_manifest: Manifest,
+    new_manifest: Manifest,
+    policy: KeyContinuityPolicy | None = None,
+) -> KeyContinuityDecision:
+    """Decide whether a refreshed manifest preserves signing-key continuity."""
+    policy = policy or KeyContinuityPolicy()
+    if old_manifest.node_id != new_manifest.node_id:
+        return KeyContinuityDecision("reject", "node_id_changed")
+    if old_manifest.org_id != new_manifest.org_id:
+        return KeyContinuityDecision("reject", "org_id_changed")
+
+    old_keys = {key.key_id: key.public_jwk for key in old_manifest.public_keys}
+    new_keys = {key.key_id: key.public_jwk for key in new_manifest.public_keys}
+    if old_keys == new_keys:
+        return KeyContinuityDecision("accept")
+
+    if not policy.allow_key_rotation:
+        return KeyContinuityDecision("reject", "rotation_denied")
+
+    signature = new_manifest.signature
+    if signature is not None:
+        old_jwk = old_keys.get(signature.key_id)
+        if old_jwk is not None and verify_model(new_manifest, old_jwk):
+            return KeyContinuityDecision("accept", "signed_rotation")
+
+    if policy.evidence_verifier is not None:
+        ok, reason = await policy.evidence_verifier(new_manifest)
+        if ok:
+            return KeyContinuityDecision("accept", "admission_evidence")
+        if reason == "rotation_denied":
+            return KeyContinuityDecision("reject", reason)
+
+    return KeyContinuityDecision("quarantine", "stale_manifest")
 
 
 async def domain_evidence_verifier(manifest: Manifest) -> tuple[bool, str]:
