@@ -79,6 +79,23 @@ async def test_two_nodes_exchange_membership(org_a, org_b):
     await client.close()
 
 
+async def test_client_probes_protocol_and_health(org_a, org_b):
+    step("SCENARIO 1b: Org A probes Org B protocol and health")
+    client = _client(org_a)
+    try:
+        protocol = await client.get_protocol(org_b.manifest)
+        health = await client.get_health(org_b.manifest)
+    finally:
+        await client.close()
+
+    assert protocol.node_id == "dir:org-b:prod"
+    assert protocol.manifest_revision == org_b.manifest.revision
+    assert protocol.protocol_versions == ["agent-directory-federation/1"]
+    assert protocol.auth_methods == ["signed_http"]
+    assert health.node_id == "dir:org-b:prod"
+    assert health.status == "ok"
+
+
 # --- Scenario 2: Org C joins via introduction + membership exchange ------------
 
 async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):

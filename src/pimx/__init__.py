@@ -31,6 +31,7 @@ from .crypto import (
     public_jwk,
     public_key_from_jwk,
 )
+from .health import PeerHealthProbeResult, probe_peer_health
 from .membership import (
     DisclosurePolicy,
     MemberRecord,
@@ -46,6 +47,7 @@ from .models import (
     Disclosure,
     DomainProofEvidence,
     GenericAdmissionEvidence,
+    HealthResponse,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
@@ -53,6 +55,7 @@ from .models import (
     MemberRef,
     Membership,
     MembersResponse,
+    ProtocolResponse,
     PublicKey,
     RevocationNotice,
     RevocationsResponse,
@@ -106,6 +109,8 @@ __all__ = [
     "generate_key",
     "public_jwk",
     "public_key_from_jwk",
+    "PeerHealthProbeResult",
+    "probe_peer_health",
     "DisclosurePolicy",
     "MemberRecord",
     "MembershipTable",
@@ -117,6 +122,7 @@ __all__ = [
     "Disclosure",
     "DomainProofEvidence",
     "GenericAdmissionEvidence",
+    "HealthResponse",
     "IntroduceRequest",
     "IntroduceResponse",
     "Manifest",
@@ -124,6 +130,7 @@ __all__ = [
     "MemberRef",
     "Membership",
     "MembersResponse",
+    "ProtocolResponse",
     "PublicKey",
     "RevocationNotice",
     "RevocationsResponse",

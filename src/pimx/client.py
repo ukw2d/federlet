@@ -10,10 +10,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .models import (
     CapabilitySummary,
+    HealthResponse,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
     MembersResponse,
+    ProtocolResponse,
     RevocationsResponse,
 )
 from .net import _assert_public_host
@@ -157,6 +159,14 @@ class FederationClient:
         if not _verify_response(peer, resp):
             raise ResponseSignatureError("bad_signature")
         return resp
+
+    async def get_protocol(self, peer: Manifest) -> ProtocolResponse:
+        r = await self._send(peer.node_id, "GET", f"{peer.endpoint.rstrip('/')}/protocol")
+        return ProtocolResponse.model_validate(r.json())
+
+    async def get_health(self, peer: Manifest) -> HealthResponse:
+        r = await self._send(peer.node_id, "GET", f"{peer.endpoint.rstrip('/')}/health")
+        return HealthResponse.model_validate(r.json())
 
     async def close(self) -> None:
         await self._http.aclose()

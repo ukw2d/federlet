@@ -168,6 +168,27 @@ class CapabilitySummary(BaseModel):
         return iso_z(dt) or ""
 
 
+class ProtocolResponse(BaseModel):
+    """Lightweight protocol capability response from GET /protocol."""
+
+    model_config = ConfigDict(extra="allow")
+
+    protocol_versions: list[str] = Field(default_factory=list)
+    auth_methods: list[str] = Field(default_factory=list)
+    node_id: str | None = None
+    manifest_revision: int | None = None
+    limits: ManifestLimits | None = None
+
+
+class HealthResponse(BaseModel):
+    """Operational health response from GET /health."""
+
+    model_config = ConfigDict(extra="allow")
+
+    status: str = "ok"
+    node_id: str | None = None
+
+
 class SignedRequest(BaseModel):
     """Detached signed-request envelope sent alongside an HTTP call."""
 

@@ -264,7 +264,14 @@ class FederationNode:
                 if path == "/.well-known/agent-directory.json":
                     self._send(200, node.manifest.model_dump(exclude_none=True))
                 elif path == "/federation/v1/protocol":
-                    self._send(200, {"protocol_versions": ["agent-directory-federation/1"]})
+                    self._send(200, {
+                        "node_id": node.node_id,
+                        "manifest_revision": node.manifest.revision,
+                        "protocol_versions": ["agent-directory-federation/1"],
+                        "auth_methods": ["signed_http"],
+                    })
+                elif path == "/federation/v1/health":
+                    self._send(200, {"node_id": node.node_id, "status": "ok"})
                 elif path == "/federation/v1/members":
                     self._send(*node.handle_members(sig))
                 else:

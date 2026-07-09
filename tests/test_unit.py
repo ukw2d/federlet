@@ -15,6 +15,7 @@ from pimx import (
     Disclosure,
     DomainProofEvidence,
     GenericAdmissionEvidence,
+    HealthResponse,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
@@ -29,6 +30,8 @@ from pimx import (
     MissingCapabilitySummaryEndpointError,
     MissingRevocationsEndpointError,
     PeerState,
+    PeerHealthProbeResult,
+    ProtocolResponse,
     PublicKey,
     RateLimiter,
     RevocationNotice,
@@ -52,6 +55,7 @@ from pimx import (
     KeyContinuityPolicy,
     public_jwk,
     public_key_from_jwk,
+    probe_peer_health,
     refresh_peer_manifest,
     sha256_hex,
     sign_model,
@@ -985,6 +989,223 @@ async def test_get_capability_summary_requires_advertised_endpoint():
             await client.get_capability_summary(peer)
     finally:
         await client.close()
+
+
+async def test_get_protocol_returns_parsed_response():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key)
+    payload = {
+        "node_id": peer.node_id,
+        "manifest_revision": peer.revision,
+        "protocol_versions": ["agent-directory-federation/1"],
+        "auth_methods": ["signed_http"],
+        "limits": {"max_query_timeout_ms": 500},
+        "extra": "host-owned",
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/federation/v1/protocol"
+        assert request.headers.get(SIGNATURE_HEADER)
+        return httpx.Response(200, json=payload)
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        resp = await client.get_protocol(peer)
+    finally:
+        await client.close()
+
+    assert isinstance(resp, ProtocolResponse)
+    assert resp.node_id == peer.node_id
+    assert resp.manifest_revision == peer.revision
+    assert resp.protocol_versions == ["agent-directory-federation/1"]
+    assert resp.auth_methods == ["signed_http"]
+    assert resp.limits is not None
+    assert resp.limits.max_query_timeout_ms == 500
+    assert resp.model_extra == {"extra": "host-owned"}
+
+
+async def test_get_health_returns_parsed_response():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/federation/v1/health"
+        assert request.headers.get(SIGNATURE_HEADER)
+        return httpx.Response(200, json={"node_id": peer.node_id, "status": "ok"})
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        resp = await client.get_health(peer)
+    finally:
+        await client.close()
+
+    assert isinstance(resp, HealthResponse)
+    assert resp.node_id == peer.node_id
+    assert resp.status == "ok"
+
+
+@pytest.mark.parametrize("method", ["get_protocol", "get_health"])
+async def test_probe_helpers_raise_on_unreachable_peer(method):
+    import httpx
+
+    peer = _manifest(generate_key())
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("unreachable")
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(httpx.ConnectError, match="unreachable"):
+            await getattr(client, method)(peer)
+    finally:
+        await client.close()
+
+
+async def test_probe_peer_health_classifies_success():
+    import httpx
+
+    peer = _manifest(generate_key())
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/protocol"):
+            return httpx.Response(200, json={
+                "node_id": peer.node_id,
+                "protocol_versions": ["agent-directory-federation/1"],
+            })
+        if request.url.path.endswith("/health"):
+            return httpx.Response(200, json={"node_id": peer.node_id, "status": "ok"})
+        return httpx.Response(404, json={"error": "not_found"})
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        result = await probe_peer_health(client, peer)
+    finally:
+        await client.close()
+
+    assert isinstance(result, PeerHealthProbeResult)
+    assert result.healthy
+    assert result.reason == "ok"
+    assert result.suggested_state == PeerState.ACTIVE
+    assert result.protocol is not None
+    assert result.protocol.node_id == peer.node_id
+    assert result.health is not None
+    assert result.health.status == "ok"
+
+
+async def test_probe_peer_health_classifies_protocol_failure():
+    import httpx
+
+    peer = _manifest(generate_key())
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("protocol unreachable")
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        result = await probe_peer_health(client, peer)
+    finally:
+        await client.close()
+
+    assert not result.healthy
+    assert result.reason == "protocol_probe_failed"
+    assert result.suggested_state == PeerState.COOLDOWN
+    assert result.protocol is None
+    assert result.health is None
+    assert result.error == "protocol unreachable"
+
+
+async def test_probe_peer_health_classifies_health_failure():
+    import httpx
+
+    peer = _manifest(generate_key())
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/protocol"):
+            return httpx.Response(200, json={"protocol_versions": ["agent-directory-federation/1"]})
+        raise httpx.ConnectError("health unreachable")
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        result = await probe_peer_health(client, peer)
+    finally:
+        await client.close()
+
+    assert not result.healthy
+    assert result.reason == "health_probe_failed"
+    assert result.suggested_state == PeerState.COOLDOWN
+    assert result.protocol is not None
+    assert result.health is None
+    assert result.error == "health unreachable"
+
+
+async def test_probe_peer_health_classifies_unhealthy_status():
+    import httpx
+
+    peer = _manifest(generate_key())
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/protocol"):
+            return httpx.Response(200, json={"protocol_versions": ["agent-directory-federation/1"]})
+        return httpx.Response(200, json={"node_id": peer.node_id, "status": "degraded"})
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        result = await probe_peer_health(client, peer)
+    finally:
+        await client.close()
+
+    assert not result.healthy
+    assert result.reason == "unhealthy"
+    assert result.suggested_state == PeerState.COOLDOWN
+    assert result.protocol is not None
+    assert result.health is not None
+    assert result.health.status == "degraded"
 
 
 async def test_introduce_rejects_bad_signature_response():
