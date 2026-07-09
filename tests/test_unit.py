@@ -10,16 +10,21 @@ from pydantic import ValidationError
 
 from pimx import (
     JWK,
+    Disclosure,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
     ManifestVerificationError,
+    ManifestLimits,
     MemberRecord,
     MembersResponse,
     Membership,
     MembershipTable,
+    MissingRevocationsEndpointError,
     PeerState,
     PublicKey,
+    RevocationNotice,
+    RevocationsResponse,
     ResponseSignatureError,
     SIGNATURE_HEADER,
     AdmissionPolicy,
@@ -37,6 +42,8 @@ from pimx import (
     sign_model,
     sign_manifest,
     verify_manifest,
+    verify_response_signature,
+    verify_revocation_notice,
     verify_signed_request,
 )
 from pimx.client import FederationClient
@@ -105,6 +112,47 @@ def test_manifest_membership_round_trips_as_typed_model():
         "revocations_url": None,
     }
     assert Manifest.model_validate(wire).membership == m.membership
+
+
+def test_manifest_optional_disclosure_limits_and_capability_summary_round_trip():
+    key = generate_key()
+    m = _manifest(
+        key,
+        capability_summary_url="https://x/capability-summary",
+        disclosure={"default": "federation", "supports_partner_scopes": True},
+        limits={
+            "max_query_rps_per_peer": 3,
+            "max_query_timeout_ms": 500,
+            "max_results": 25,
+        },
+    )
+    assert isinstance(m.disclosure, Disclosure)
+    assert isinstance(m.limits, ManifestLimits)
+    assert verify_manifest(m)
+
+    wire = m.model_dump(mode="json")
+    assert wire["capability_summary_url"] == "https://x/capability-summary"
+    assert wire["disclosure"] == {
+        "default": "federation",
+        "supports_partner_scopes": True,
+    }
+    assert wire["limits"] == {
+        "max_query_rps_per_peer": 3,
+        "max_query_timeout_ms": 500,
+        "max_results": 25,
+    }
+    assert verify_manifest(Manifest.model_validate(wire))
+
+
+def test_manifest_extension_fields_remain_optional():
+    key = generate_key()
+    m = _manifest(key)
+    wire = m.model_dump(mode="json")
+    assert wire["capability_summary_url"] is None
+    assert wire["disclosure"] is None
+    assert wire["limits"] is None
+    assert Manifest.model_validate(wire).disclosure is None
+    assert Manifest.model_validate(wire).limits is None
 
 
 def test_manifest_missing_membership_key_raises_validation_error():
@@ -258,6 +306,41 @@ def test_manifest_wrong_key_fails():
     other = _manifest(generate_key())
     forged = m.model_copy(update={"signature": other.signature})
     assert not verify_manifest(forged)
+
+
+def test_verify_response_signature_accepts_peer_signed_response():
+    peer_key = generate_key()
+    peer = _manifest(peer_key)
+    signed = sign_model(
+        IntroduceResponse(accepted=True, accepted_node_id=peer.node_id),
+        peer_key,
+        "k1",
+    )
+
+    assert verify_response_signature(peer, signed)
+    assert not verify_response_signature(peer, signed.model_copy(update={"signature": None}))
+
+
+def test_revocation_notice_round_trips_and_verifies():
+    key = generate_key()
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id="dir:org-b:prod",
+            reason="removed",
+            issued_at=datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc),
+            expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc),
+            issuer="dir:org-a:prod",
+        ),
+        key,
+        "k1",
+    )
+
+    wire = notice.model_dump(mode="json")
+    assert wire["issued_at"] == "2026-07-09T10:00:00Z"
+    assert wire["expires_at"] == "2026-07-10T10:00:00Z"
+    assert verify_revocation_notice(RevocationNotice.model_validate(wire), public_jwk(key))
+    assert RevocationsResponse(source_node_id="dir:org-a:prod", notices=[notice])
 
 
 async def test_signed_request_roundtrip_and_replay(cache):
@@ -445,6 +528,114 @@ async def test_members_accepts_signed_response():
     )
     try:
         assert await client.get_members(peer) == signed
+    finally:
+        await client.close()
+
+
+async def test_get_revocations_accepts_signed_response():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(
+        peer_key,
+        membership=Membership(
+            introduce_url="https://x/i",
+            members_url="https://x/m",
+            revocations_url="https://x/r",
+        ),
+    )
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id="dir:org-b:prod",
+            reason="removed",
+            issued_at=datetime.now(timezone.utc),
+            issuer=peer.node_id,
+        ),
+        peer_key,
+        "k1",
+    )
+    signed = sign_model(
+        RevocationsResponse(source_node_id=peer.node_id, notices=[notice]),
+        peer_key,
+        "k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/r"
+        assert request.url.params["since"] == "cursor-1"
+        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        assert await client.get_revocations(peer, since="cursor-1") == signed
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("response_factory", [
+    lambda peer, _: RevocationsResponse(source_node_id=peer.node_id),
+    lambda peer, bad_key: sign_model(
+        RevocationsResponse(source_node_id=peer.node_id),
+        bad_key,
+        "k1",
+    ),
+])
+async def test_get_revocations_rejects_unsigned_or_bad_response(response_factory):
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(
+        peer_key,
+        membership=Membership(
+            introduce_url="https://x/i",
+            members_url="https://x/m",
+            revocations_url="https://x/r",
+        ),
+    )
+    response = response_factory(peer, generate_key())
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(ResponseSignatureError):
+            await client.get_revocations(peer)
+    finally:
+        await client.close()
+
+
+async def test_get_revocations_requires_advertised_endpoint():
+    import httpx
+
+    peer = _manifest(generate_key())
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("request should not be sent")
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(MissingRevocationsEndpointError, match="missing_revocations_url"):
+            await client.get_revocations(peer)
     finally:
         await client.close()
 

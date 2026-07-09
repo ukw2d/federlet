@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from ._time import utc_now
 from .crypto import JWK, b64u_encode, canonical_bytes, sign_bytes, verify_bytes
-from .models import Manifest, PublicKey, Signature, SignedRequest
+from .models import Manifest, PublicKey, RevocationNotice, Signature, SignedRequest
 from .protocols.nonce import NonceCache
 
 M = TypeVar("M", bound=BaseModel)
@@ -95,6 +95,21 @@ def verify_manifest(manifest: Manifest, *, max_skew_seconds: int = 300) -> bool:
     """True only if the manifest's signature is valid and it is currently fresh."""
     ok, _ = check_manifest(manifest, max_skew_seconds=max_skew_seconds)
     return ok
+
+
+def verify_response_signature(peer_manifest: Manifest, response: BaseModel) -> bool:
+    """Verify a signed response against the owning peer's advertised key."""
+    signature = getattr(response, "signature", None)
+    if signature is None:
+        return False
+    jwk = find_jwk(peer_manifest.public_keys, signature.key_id)
+    if jwk is None:
+        return False
+    return verify_model(response, jwk)
+
+
+def verify_revocation_notice(notice: RevocationNotice, jwk: JWK) -> bool:
+    return verify_model(notice, jwk)
 
 
 # --- Signed request envelopes ------------------------------------------------

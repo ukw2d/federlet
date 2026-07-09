@@ -7,6 +7,7 @@ from .client import (
     SIGNATURE_HEADER,
     FederationClient,
     ManifestVerificationError,
+    MissingRevocationsEndpointError,
     ResponseSignatureError,
 )
 from .admission import (
@@ -28,13 +29,17 @@ from .crypto import (
 from .membership import MemberRecord, MembershipTable, PeerState
 from .net import SSRFError
 from .models import (
+    Disclosure,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
+    ManifestLimits,
     MemberRef,
     Membership,
     MembersResponse,
     PublicKey,
+    RevocationNotice,
+    RevocationsResponse,
     Signature,
     SignedRequest,
 )
@@ -50,12 +55,15 @@ from .signing import (
     verify_dict,
     verify_manifest,
     verify_model,
+    verify_response_signature,
+    verify_revocation_notice,
     verify_signed_request,
 )
 
 __all__ = [
     "FederationClient",
     "ManifestVerificationError",
+    "MissingRevocationsEndpointError",
     "ResponseSignatureError",
     "SIGNATURE_HEADER",
     "SSRFError",
@@ -73,13 +81,17 @@ __all__ = [
     "MemberRecord",
     "MembershipTable",
     "PeerState",
+    "Disclosure",
     "IntroduceRequest",
     "IntroduceResponse",
     "Manifest",
+    "ManifestLimits",
     "MemberRef",
     "Membership",
     "MembersResponse",
     "PublicKey",
+    "RevocationNotice",
+    "RevocationsResponse",
     "Signature",
     "SignedRequest",
     "EvidenceVerifier",
@@ -94,5 +106,7 @@ __all__ = [
     "verify_dict",
     "verify_manifest",
     "verify_model",
+    "verify_response_signature",
+    "verify_revocation_notice",
     "verify_signed_request",
 ]

@@ -13,9 +13,10 @@ from .models import (
     IntroduceResponse,
     Manifest,
     MembersResponse,
+    RevocationsResponse,
 )
 from .net import _assert_public_host
-from .signing import build_signed_request, check_manifest, find_jwk, verify_model
+from .signing import build_signed_request, check_manifest, verify_response_signature
 
 SIGNATURE_HEADER = "X-PIMX-Signature"
 
@@ -28,16 +29,14 @@ class ManifestVerificationError(ValueError):
     """Raised when a fetched manifest is unsigned, stale, or unverifiable."""
 
 
+class MissingRevocationsEndpointError(ValueError):
+    """Raised when a peer manifest does not advertise a revocations endpoint."""
+
+
 def _verify_response(
-    peer: Manifest, resp: IntroduceResponse | MembersResponse
+    peer: Manifest, resp: IntroduceResponse | MembersResponse | RevocationsResponse
 ) -> bool:
-    """Verify a signed response against the owning peer's advertised key."""
-    if resp.signature is None:
-        return False
-    jwk = find_jwk(peer.public_keys, resp.signature.key_id)
-    if jwk is None:
-        return False
-    return verify_model(resp, jwk)
+    return verify_response_signature(peer, resp)
 
 
 class FederationClient:
@@ -128,6 +127,18 @@ class FederationClient:
         params = {"since": since} if since else None
         r = await self._send(peer.node_id, "GET", peer.membership.members_url, params=params)
         resp = MembersResponse.model_validate(r.json())
+        if not _verify_response(peer, resp):
+            raise ResponseSignatureError("bad_signature")
+        return resp
+
+    async def get_revocations(
+        self, peer: Manifest, since: str | None = None
+    ) -> RevocationsResponse:
+        if peer.membership.revocations_url is None:
+            raise MissingRevocationsEndpointError("missing_revocations_url")
+        params = {"since": since} if since else None
+        r = await self._send(peer.node_id, "GET", peer.membership.revocations_url, params=params)
+        resp = RevocationsResponse.model_validate(r.json())
         if not _verify_response(peer, resp):
             raise ResponseSignatureError("bad_signature")
         return resp

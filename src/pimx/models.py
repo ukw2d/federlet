@@ -34,6 +34,17 @@ class Membership(BaseModel):
     revocations_url: str | None = None
 
 
+class Disclosure(BaseModel):
+    default: str
+    supports_partner_scopes: bool
+
+
+class ManifestLimits(BaseModel):
+    max_query_rps_per_peer: int | None = None
+    max_query_timeout_ms: int | None = None
+    max_results: int | None = None
+
+
 class Manifest(BaseModel):
     node_id: str
     org_id: str
@@ -45,7 +56,10 @@ class Manifest(BaseModel):
     public_keys: list[PublicKey] = Field(default_factory=list)
     auth_methods: list[str] = Field(default_factory=lambda: ["signed_http"])
     membership: Membership
+    capability_summary_url: str | None = None
     admission_evidence: dict[str, Any] | None = None
+    disclosure: Disclosure | None = None
+    limits: ManifestLimits | None = None
     issued_at: AwareDatetime | None = None
     expires_at: AwareDatetime | None = None
     signature: Signature | None = None
@@ -96,6 +110,27 @@ class MembersResponse(BaseModel):
     source_node_id: str
     cursor: str | None = None
     members: list[MemberRef] = Field(default_factory=list)
+    signature: Signature | None = None
+
+
+class RevocationNotice(BaseModel):
+    federation_id: str
+    revoked_node_id: str
+    reason: str
+    issued_at: AwareDatetime
+    expires_at: AwareDatetime | None = None
+    issuer: str
+    signature: Signature | None = None
+
+    @field_serializer("issued_at", "expires_at", when_used="json")
+    def _ser_ts(self, dt: datetime | None) -> str | None:
+        return iso_z(dt)
+
+
+class RevocationsResponse(BaseModel):
+    source_node_id: str
+    cursor: str | None = None
+    notices: list[RevocationNotice] = Field(default_factory=list)
     signature: Signature | None = None
 
 
