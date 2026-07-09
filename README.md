@@ -73,44 +73,141 @@ or registry policy. Those belong to the host application.
 
 ## Quick start
 
-### 1. Create and sign a manifest
+This example runs without a server. It creates two node manifests, admits one
+peer under local policy, signs a request from node A to node B, and verifies it
+with replay protection.
 
 ```python
+import asyncio
 from datetime import datetime, timedelta, timezone
 
-from pimx import Manifest, PublicKey, generate_key, public_jwk, sign_manifest
-
-key = generate_key()
-key_id = "ed25519-2026-01"
-now = datetime.now(timezone.utc)
-
-manifest = Manifest(
-    node_id="dir:org-a:prod",
-    org_id="org-a",
-    federations=["supplier-network-prod"],
-    endpoint="https://dir.org-a.example/federation/v1",
-    protocol_versions=["agent-directory-federation/1"],
-    revision=12,
-    public_keys=[PublicKey(key_id=key_id, public_jwk=public_jwk(key))],
-    membership={
-        "introduce_url": "https://dir.org-a.example/federation/v1/introduce",
-        "members_url": "https://dir.org-a.example/federation/v1/members",
-    },
-    admission_evidence={"type": "domain_proof", "domain": "org-a.example"},
-    issued_at=now,
-    expires_at=now + timedelta(days=7),
+from pimx import (
+    AdmissionPolicy,
+    Manifest,
+    Membership,
+    PublicKey,
+    admit_manifest,
+    build_signed_request,
+    find_jwk,
+    generate_key,
+    public_jwk,
+    sign_manifest,
+    verify_signed_request,
 )
 
-signed_manifest = sign_manifest(manifest, key, key_id)
+
+class MemoryNonceCache:
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+
+    async def set(
+        self,
+        key: str,
+        value: object,
+        expire: float | None = None,
+        exist: bool | None = None,
+    ) -> bool:
+        if exist is False and key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
+
+def make_manifest(
+    *,
+    node_id: str,
+    org_id: str,
+    endpoint: str,
+    key,
+    key_id: str,
+) -> Manifest:
+    now = datetime.now(timezone.utc)
+    manifest = Manifest(
+        node_id=node_id,
+        org_id=org_id,
+        federations=["supplier-network-prod"],
+        endpoint=endpoint,
+        protocol_versions=["agent-directory-federation/1"],
+        revision=1,
+        public_keys=[PublicKey(key_id=key_id, public_jwk=public_jwk(key))],
+        membership=Membership(
+            introduce_url=f"{endpoint}/members/introduce",
+            members_url=f"{endpoint}/members",
+        ),
+        issued_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    return sign_manifest(manifest, key, key_id)
+
+
+async def main() -> None:
+    key_a = generate_key()
+    key_b = generate_key()
+    manifest_a = make_manifest(
+        node_id="dir:org-a:prod",
+        org_id="org-a",
+        endpoint="https://dir-a.example/federation/v1",
+        key=key_a,
+        key_id="org-a-k1",
+    )
+    manifest_b = make_manifest(
+        node_id="dir:org-b:prod",
+        org_id="org-b",
+        endpoint="https://dir-b.example/federation/v1",
+        key=key_b,
+        key_id="org-b-k1",
+    )
+
+    decision = await admit_manifest(
+        manifest_b,
+        AdmissionPolicy(
+            federation_id="supplier-network-prod",
+            protocol_versions={"agent-directory-federation/1"},
+        ),
+    )
+    assert decision.accepted, decision.reason
+
+    body = b'{"operation":"example"}'
+    envelope = build_signed_request(
+        key_a,
+        "org-a-k1",
+        federation_id="supplier-network-prod",
+        source_node_id=manifest_a.node_id,
+        target_node_id=manifest_b.node_id,
+        method="POST",
+        path="/federation/v1/example",
+        body=body,
+        source_manifest_revision=manifest_a.revision,
+    )
+    assert envelope.signature is not None
+    jwk = find_jwk(manifest_a.public_keys, envelope.signature.key_id)
+    assert jwk is not None
+
+    ok, reason = await verify_signed_request(
+        envelope,
+        jwk,
+        self_node_id=manifest_b.node_id,
+        method="POST",
+        path="/federation/v1/example",
+        body=body,
+        cache=MemoryNonceCache(),
+    )
+    assert ok, reason
+    print("verified")
+
+
+asyncio.run(main())
 ```
 
-Publish the signed manifest at a stable HTTPS URL controlled by your service.
+Publish your signed manifest at a stable HTTPS URL controlled by your service.
+Your HTTP adapter can then use the same verification function for inbound peer
+requests.
 
-### 2. Verify inbound signed requests
+## Host adapter sketch
 
 Inbound federation endpoints should parse the detached signature envelope,
-choose the sender's current public key from its manifest, then verify the
-request against the exact method, path, target node, and body bytes.
+choose the sender's current public key from its trusted manifest, then verify
+the request against the actual method, path, target node, and body bytes.
 
 Replay protection is the one place pimx needs cache semantics. Pass any object
 that implements `NonceCache.set(key, value, expire=..., exist=False)`. A
@@ -171,7 +268,7 @@ The nonce key is scoped by federation, source node, target node, and nonce. It
 is claimed only after the signature, target, method, path, timestamp, and body
 hash are valid. Failed unauthenticated requests do not consume nonces.
 
-### 3. Admit peer manifests
+## Admission
 
 Admission is local policy. pimx validates the manifest signature, freshness,
 federation id, protocol version, signed-HTTP support, HTTPS endpoint, and
@@ -193,7 +290,7 @@ if not decision.accepted:
     raise ValueError(f"peer rejected: {decision.reason}")
 ```
 
-### 4. Call peers for protocol exchange
+## Protocol client
 
 `FederationClient` verifies fetched manifests, signs outbound requests, and
 verifies signed introduction and membership responses.
@@ -214,6 +311,18 @@ async with FederationClient(
 
 Your application decides what to do with accepted peer manifests and member
 references. pimx only signs and verifies the protocol exchange.
+
+## Module Map
+
+| Module | Purpose |
+| --- | --- |
+| `pimx.models` | Pydantic wire models for manifests, introductions, membership, signatures, and signed request envelopes. |
+| `pimx.crypto` | Ed25519/JWK conversion, base64url helpers, and RFC 8785 canonical JSON bytes. |
+| `pimx.signing` | Manifest signing/checking and signed request construction/verification. |
+| `pimx.admission` | Local manifest admission checks and host-supplied evidence verifier protocol. |
+| `pimx.membership` | In-memory membership state helpers; persistence remains host-owned. |
+| `pimx.client` | Async `httpx` helpers for manifest fetch, introduction, and member exchange. |
+| `pimx.protocols` | Structural protocols such as `NonceCache`. |
 
 ## Usage scenarios
 
@@ -285,18 +394,27 @@ Primary imports are re-exported from `pimx`:
 
 ```python
 from pimx import (
+    AdmissionDecision,
     AdmissionPolicy,
+    EvidenceVerifier,
     FederationClient,
     IntroduceRequest,
     IntroduceResponse,
     JWK,
     Manifest,
     ManifestVerificationError,
+    MemberRecord,
+    MemberRef,
+    Membership,
     MembersResponse,
     MembershipTable,
     NonceCache,
+    PeerState,
+    PublicKey,
     ResponseSignatureError,
     SIGNATURE_HEADER,
+    SSRFError,
+    Signature,
     SignedRequest,
     admit_manifest,
     b64u_decode,
@@ -304,6 +422,7 @@ from pimx import (
     build_signed_request,
     canonical_bytes,
     check_manifest,
+    domain_evidence_verifier,
     find_jwk,
     generate_key,
     public_jwk,
