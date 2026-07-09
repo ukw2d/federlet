@@ -158,6 +158,22 @@ def test_manifest_timestamps_normalize_to_z_and_verify():
     assert verify_manifest(Manifest.model_validate(wire))
 
 
+def test_introduce_response_accepted_until_round_trips_as_aware_datetime():
+    # accepted_until is an AwareDatetime that serializes to ISO-Z, mirroring
+    # IntroduceRequest.timestamp. ADR-005 §8.2.
+    until = datetime(2026, 7, 8, 10, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+    resp = IntroduceResponse(accepted=True, accepted_until=until, known_peer_count=14)
+    wire = resp.model_dump(mode="json")
+    assert wire["accepted_until"] == "2026-07-08T08:00:00Z"
+    assert wire["known_peer_count"] == 14
+    rt = IntroduceResponse.model_validate(wire)
+    assert rt.accepted_until == datetime(2026, 7, 8, 8, 0, 0, tzinfo=timezone.utc)
+    assert rt.known_peer_count == 14
+
+    # None stays None on the wire (no spurious empty string).
+    assert IntroduceResponse(accepted=True).model_dump(mode="json")["accepted_until"] is None
+
+
 async def test_admission_policy_accepts_valid_manifest():
     key = generate_key()
     now = datetime.now(timezone.utc)

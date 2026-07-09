@@ -73,10 +73,15 @@ class IntroduceResponse(BaseModel):
     accepted: bool
     accepted_node_id: str | None = None
     accepted_manifest_revision: int | None = None
-    accepted_until: str | None = None
+    accepted_until: AwareDatetime | None = None
     reason: str | None = None
     membership_cursor: str | None = None
+    known_peer_count: int | None = None
     signature: Signature | None = None
+
+    @field_serializer("accepted_until", when_used="json")
+    def _ser_ts(self, dt: datetime | None) -> str | None:
+        return iso_z(dt)
 
 
 class MemberRef(BaseModel):
