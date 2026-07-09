@@ -9,8 +9,11 @@ from cashews import Cache
 from pydantic import ValidationError
 
 from pimx import (
+    AdmissionEvidence,
     JWK,
     Disclosure,
+    DomainProofEvidence,
+    GenericAdmissionEvidence,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
@@ -19,20 +22,26 @@ from pimx import (
     MemberRecord,
     MembersResponse,
     Membership,
+    MembershipStore,
     MembershipTable,
     MissingRevocationsEndpointError,
     PeerState,
     PublicKey,
+    RateLimiter,
     RevocationNotice,
     RevocationsResponse,
     ResponseSignatureError,
     SIGNATURE_HEADER,
     AdmissionPolicy,
+    DisclosurePolicy,
     admit_manifest,
+    apply_revocation_notice,
+    audit_record,
     b64u_decode,
     b64u_encode,
     build_signed_request,
     canonical_bytes,
+    check_body_size,
     check_manifest,
     domain_evidence_verifier,
     generate_key,
@@ -41,6 +50,8 @@ from pimx import (
     sha256_hex,
     sign_model,
     sign_manifest,
+    TokenBucketRateLimiter,
+    disclose_members,
     verify_manifest,
     verify_response_signature,
     verify_revocation_notice,
@@ -222,6 +233,39 @@ def test_introduce_response_accepted_until_round_trips_as_aware_datetime():
     assert IntroduceResponse(accepted=True).model_dump(mode="json")["accepted_until"] is None
 
 
+def test_manifest_domain_proof_admission_evidence_round_trips_as_typed_model():
+    key = generate_key()
+    manifest = _manifest(
+        key,
+        admission_evidence={"type": "domain_proof", "domain": "org-a.example"},
+    )
+
+    assert isinstance(manifest.admission_evidence, DomainProofEvidence)
+    evidence = manifest.admission_evidence
+    assert evidence.domain == "org-a.example"
+    wire = manifest.model_dump(mode="json")
+    assert wire["admission_evidence"] == {
+        "type": "domain_proof",
+        "domain": "org-a.example",
+    }
+    assert isinstance(Manifest.model_validate(wire).admission_evidence, DomainProofEvidence)
+
+
+def test_manifest_unknown_admission_evidence_keeps_tagged_shape():
+    key = generate_key()
+    manifest = _manifest(
+        key,
+        admission_evidence={"type": "spiffe", "trust_domain": "example.org"},
+    )
+
+    assert isinstance(manifest.admission_evidence, GenericAdmissionEvidence)
+    wire = manifest.model_dump(mode="json")
+    assert wire["admission_evidence"] == {
+        "type": "spiffe",
+        "trust_domain": "example.org",
+    }
+
+
 async def test_admission_policy_accepts_valid_manifest():
     key = generate_key()
     now = datetime.now(timezone.utc)
@@ -343,6 +387,38 @@ def test_revocation_notice_round_trips_and_verifies():
     assert RevocationsResponse(source_node_id="dir:org-a:prod", notices=[notice])
 
 
+def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
+    limiter: RateLimiter = TokenBucketRateLimiter({
+        "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
+    })
+
+    assert limiter.allow("dir:org-a:prod", now=0.0)
+    assert limiter.allow("dir:org-a:prod", now=0.0)
+    assert not limiter.allow("dir:org-a:prod", now=0.0)
+
+
+def test_token_bucket_rate_limiter_refills_over_time():
+    limiter = TokenBucketRateLimiter({
+        "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
+    })
+
+    assert limiter.allow("dir:org-a:prod", now=0.0)
+    assert limiter.allow("dir:org-a:prod", now=0.0)
+    assert not limiter.allow("dir:org-a:prod", now=0.25)
+    assert limiter.allow("dir:org-a:prod", now=0.5)
+    assert not limiter.allow("dir:org-a:prod", now=0.5)
+
+
+def test_token_bucket_rate_limiter_treats_missing_limit_as_unbounded():
+    limiter = TokenBucketRateLimiter({
+        "dir:org-a:prod": ManifestLimits(),
+    })
+
+    assert limiter.allow("unknown", now=0.0)
+    assert limiter.allow("dir:org-a:prod", now=0.0)
+    assert limiter.allow("dir:org-a:prod", now=0.0)
+
+
 async def test_signed_request_roundtrip_and_replay(cache):
     key = generate_key()
     jwk = public_jwk(key)
@@ -371,6 +447,60 @@ async def test_signed_request_roundtrip_and_replay(cache):
         cache=cache,
     )
     assert replay == (False, "replay")
+
+
+async def test_signed_request_body_size_limit_passes_under_limit(cache):
+    key = generate_key()
+    body = b'{"x":1}'
+    env = build_signed_request(
+        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
+        method="POST", path="/query", body=body,
+    )
+
+    assert check_body_size(body, len(body))
+    assert await verify_signed_request(
+        env,
+        public_jwk(key),
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=body,
+        max_body_bytes=len(body),
+        cache=cache,
+    ) == (True, "ok")
+
+
+async def test_signed_request_body_size_limit_rejects_without_burning_nonce(cache):
+    key = generate_key()
+    body = b'{"payload":"too-large"}'
+    env = build_signed_request(
+        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
+        method="POST", path="/query", body=body,
+    )
+
+    assert not check_body_size(body, len(body) - 1)
+    oversized = await verify_signed_request(
+        env,
+        public_jwk(key),
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=body,
+        max_body_bytes=len(body) - 1,
+        cache=cache,
+    )
+    assert oversized == (False, "body_too_large")
+
+    ok = await verify_signed_request(
+        env,
+        public_jwk(key),
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=body,
+        cache=cache,
+    )
+    assert ok == (True, "ok")
 
 
 async def test_replay_cache_key_is_scoped_to_request_context():
@@ -730,11 +860,46 @@ async def test_fetch_manifest_rejects_unverified_manifest(manifest_update, reaso
 def test_public_crypto_and_signing_helpers_are_exported():
     key = generate_key()
     jwk: JWK = public_jwk(key)
+    assert AdmissionEvidence is not None
     assert public_key_from_jwk(jwk)
     assert b64u_decode(b64u_encode(b"abc")) == b"abc"
     assert canonical_bytes({"b": 2, "a": 1}) == b'{"a":1,"b":2}'
     assert sha256_hex(b"abc").startswith("sha256:")
     assert SIGNATURE_HEADER == "X-PIMX-Signature"
+
+
+def test_audit_record_includes_required_shape_and_timestamp():
+    record = audit_record(
+        event="admission_decision",
+        request_id="req-1",
+        source_node_id="dir:org-a:prod",
+        target_node_id="dir:org-b:prod",
+        manifest_revision=7,
+        decision="accepted",
+        reason="ok",
+        extra={"transport": "http", "omitted": None},
+    )
+
+    assert record["event"] == "admission_decision"
+    assert record["request_id"] == "req-1"
+    assert record["source_node_id"] == "dir:org-a:prod"
+    assert record["target_node_id"] == "dir:org-b:prod"
+    assert record["manifest_revision"] == 7
+    assert record["decision"] == "accepted"
+    assert record["reason"] == "ok"
+    assert record["transport"] == "http"
+    assert "omitted" not in record
+    assert record["timestamp"].endswith("Z")
+    datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+
+
+def test_audit_record_omits_none_optional_fields():
+    record = audit_record(event="query")
+
+    assert record["event"] == "query"
+    assert "request_id" not in record
+    assert "query_id" not in record
+    assert "decision" not in record
 
 
 def test_membership_cooldown_and_recovery():
@@ -753,6 +918,60 @@ def test_membership_cooldown_and_recovery():
     assert len(t.eligible_peers()) == 1
 
 
+def test_membership_table_satisfies_membership_store_protocol():
+    table = MembershipTable()
+    store: MembershipStore = table
+    assert store is table
+
+
+def test_disclose_members_excludes_ineligible_and_denied_peers():
+    active = MemberRecord(
+        node_id="dir:org-a:prod",
+        org_id="org-a",
+        manifest_url="https://a.example/.well-known/agent-directory.json",
+        manifest_revision=2,
+    )
+    revoked = MemberRecord(
+        node_id="dir:org-b:prod",
+        manifest_url="https://b.example/.well-known/agent-directory.json",
+        state=PeerState.REVOKED,
+    )
+    denied = MemberRecord(
+        node_id="dir:org-c:prod",
+        manifest_url="https://c.example/.well-known/agent-directory.json",
+    )
+
+    refs = disclose_members(
+        [active, revoked, denied],
+        requester_node_id="dir:requester:prod",
+        policy=DisclosurePolicy(default="federation", denied={"dir:org-c:prod"}),
+    )
+
+    assert len(refs) == 1
+    assert refs[0].node_id == "dir:org-a:prod"
+    assert refs[0].org_id == "org-a"
+    assert refs[0].manifest_revision == 2
+    assert refs[0].disclosure == "federation"
+
+
+def test_disclose_members_applies_requester_specific_disclosure():
+    rec = MemberRecord(
+        node_id="dir:org-a:prod",
+        manifest_url="https://a.example/.well-known/agent-directory.json",
+    )
+
+    refs = disclose_members(
+        [rec],
+        requester_node_id="dir:requester:prod",
+        policy=DisclosurePolicy(
+            default="federation",
+            requester_disclosure={"dir:requester:prod": "partner"},
+        ),
+    )
+
+    assert refs[0].disclosure == "partner"
+
+
 def test_revoked_peer_is_never_eligible():
     t = MembershipTable()
     t.upsert(MemberRecord(node_id="n", manifest_url="https://x/m.json"))
@@ -760,6 +979,112 @@ def test_revoked_peer_is_never_eligible():
     t.revoke("n")
     assert t.get("n").state == PeerState.REVOKED
     assert t.eligible_peers() == []
+
+
+def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
+    issuer_key = generate_key()
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id="dir:org-b:prod", manifest_url="https://x/m.json"))
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id="dir:org-b:prod",
+            reason="removed",
+            issued_at=datetime.now(timezone.utc),
+            issuer="dir:org-a:prod",
+        ),
+        issuer_key,
+        "issuer-k1",
+    )
+
+    state = apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+    )
+
+    assert state == PeerState.REVOKED
+    assert table.get("dir:org-b:prod").state == PeerState.REVOKED
+
+
+def test_apply_revocation_notice_ignores_untrusted_issuer():
+    issuer_key = generate_key()
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id="dir:org-b:prod", manifest_url="https://x/m.json"))
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id="dir:org-b:prod",
+            reason="removed",
+            issued_at=datetime.now(timezone.utc),
+            issuer="dir:org-a:prod",
+        ),
+        issuer_key,
+        "issuer-k1",
+    )
+
+    state = apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={},
+    )
+
+    assert state == PeerState.ACTIVE
+    assert table.get("dir:org-b:prod").state == PeerState.ACTIVE
+
+
+def test_apply_revocation_notice_ignores_wrong_federation():
+    issuer_key = generate_key()
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id="dir:org-b:prod", manifest_url="https://x/m.json"))
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="other",
+            revoked_node_id="dir:org-b:prod",
+            reason="removed",
+            issued_at=datetime.now(timezone.utc),
+            issuer="dir:org-a:prod",
+        ),
+        issuer_key,
+        "issuer-k1",
+    )
+
+    state = apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+    )
+
+    assert state == PeerState.ACTIVE
+    assert table.get("dir:org-b:prod").state == PeerState.ACTIVE
+
+
+def test_apply_revocation_notice_ignores_unknown_peer():
+    issuer_key = generate_key()
+    table = MembershipTable()
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id="dir:unknown:prod",
+            reason="removed",
+            issued_at=datetime.now(timezone.utc),
+            issuer="dir:org-a:prod",
+        ),
+        issuer_key,
+        "issuer-k1",
+    )
+
+    state = apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+    )
+
+    assert state is None
 
 
 def test_ssrf_guard_blocks_private_hosts():

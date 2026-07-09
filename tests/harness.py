@@ -20,16 +20,17 @@ from urllib.parse import urlparse
 from cashews import Cache
 
 from pimx import (
+    DisclosurePolicy,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
     MemberRecord,
-    MemberRef,
     Membership,
     MembershipTable,
     MembersResponse,
     PublicKey,
     SignedRequest,
+    disclose_members,
     generate_key,
     public_jwk,
     sign_manifest,
@@ -107,8 +108,17 @@ class FederationNode:
 
     def _admit(self, manifest: Manifest) -> None:
         self.peers[manifest.node_id] = manifest
+        manifest_url = manifest.membership.introduce_url.replace(
+            "/federation/v1/members/introduce",
+            "/.well-known/agent-directory.json",
+        )
         self.membership_table.admit(
-            MemberRecord(node_id=manifest.node_id, manifest_url="", org_id=manifest.org_id)
+            MemberRecord(
+                node_id=manifest.node_id,
+                manifest_url=manifest_url,
+                org_id=manifest.org_id,
+                manifest_revision=manifest.revision,
+            )
         )
         self._log(
             f"membership table now: {sorted(self.peers)} "
@@ -214,18 +224,11 @@ class FederationNode:
         if not ok:
             return 401, {"error": reason}
         self._log(f"  → disclosing {len(self.peers)} peer(s): {sorted(self.peers)}")
-        members = [
-            MemberRef(
-                node_id=p.node_id,
-                org_id=p.org_id,
-                manifest_url=p.membership.introduce_url.replace(
-                    "/federation/v1/members/introduce",
-                    "/.well-known/agent-directory.json",
-                ),
-                manifest_revision=p.revision,
-            )
-            for p in self.peers.values()
-        ]
+        members = disclose_members(
+            self.membership_table.eligible_peers(),
+            requester_node_id="",
+            policy=DisclosurePolicy(),
+        )
         return 200, self._sign(
             MembersResponse(source_node_id=self.node_id, members=members)
         )

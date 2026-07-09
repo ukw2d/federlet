@@ -22,6 +22,10 @@ def sha256_hex(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def check_body_size(body: bytes, max_bytes: int | None) -> bool:
+    return max_bytes is None or len(body) <= max_bytes
+
+
 def _nonce_cache_key(env: SignedRequest) -> str:
     return (
         "pimx:nonce:"
@@ -150,6 +154,7 @@ async def verify_signed_request(
     method: str,
     path: str,
     body: bytes = b"",
+    max_body_bytes: int | None = None,
     max_skew_seconds: int = 300,
     cache: NonceCache | None = None,
 ) -> tuple[bool, str]:
@@ -174,6 +179,8 @@ async def verify_signed_request(
         return False, "method_mismatch"
     if env.path != path:
         return False, "path_mismatch"
+    if not check_body_size(body, max_body_bytes):
+        return False, "body_too_large"
     if env.body_sha256 != sha256_hex(body):
         return False, "body_mismatch"
     if abs((utc_now() - env.timestamp).total_seconds()) > max_skew_seconds:

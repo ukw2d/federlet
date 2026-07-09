@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from ._time import utc_now
+from .crypto import JWK
+from .models import MemberRef, RevocationNotice
+from .signing import verify_revocation_notice
+
+if TYPE_CHECKING:
+    from .protocols import MembershipStore
 
 
 class PeerState(str, Enum):
@@ -38,6 +46,13 @@ class MemberRecord:
         if self.cooldown_until and now < self.cooldown_until:
             return False
         return True
+
+
+@dataclass
+class DisclosurePolicy:
+    default: str = "federation"
+    denied: set[str] = field(default_factory=set)
+    requester_disclosure: dict[str, str] = field(default_factory=dict)
 
 
 class MembershipTable:
@@ -102,3 +117,41 @@ class MembershipTable:
         rec = self._peers.get(node_id)
         if rec is not None:
             rec.state = state
+
+
+def disclose_members(
+    members: list[MemberRecord],
+    requester_node_id: str,
+    policy: DisclosurePolicy,
+) -> list[MemberRef]:
+    disclosure = policy.requester_disclosure.get(requester_node_id, policy.default)
+    return [
+        MemberRef(
+            node_id=rec.node_id,
+            org_id=rec.org_id,
+            manifest_url=rec.manifest_url,
+            manifest_revision=rec.manifest_revision,
+            disclosure=disclosure,
+        )
+        for rec in members
+        if rec.is_eligible() and rec.node_id not in policy.denied
+    ]
+
+
+def apply_revocation_notice(
+    table: MembershipStore,
+    notice: RevocationNotice,
+    *,
+    federation_id: str,
+    trusted_issuer_keys: Mapping[str, JWK],
+) -> PeerState | None:
+    rec = table.get(notice.revoked_node_id)
+    if rec is None:
+        return None
+    if notice.federation_id != federation_id or notice.signature is None:
+        return rec.state
+    jwk = trusted_issuer_keys.get(notice.signature.key_id)
+    if jwk is None or not verify_revocation_notice(notice, jwk):
+        return rec.state
+    table.revoke(notice.revoked_node_id)
+    return rec.state

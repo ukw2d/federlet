@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urlparse
 
-from .models import Manifest
+from .models import DomainProofEvidence, Manifest
 from .net import is_disallowed_ip
 from .signing import check_manifest
 
@@ -73,13 +73,12 @@ async def domain_evidence_verifier(manifest: Manifest) -> tuple[bool, str]:
     types (SPIFFE, partner credentials, charter keys) belong behind host-supplied
     callbacks with their own trust material.
     """
-    ev = manifest.admission_evidence or {}
-    if ev.get("type") != "domain_proof":
+    ev = manifest.admission_evidence
+    if not isinstance(ev, DomainProofEvidence):
         return False, "unsupported_evidence"
-    domain = ev.get("domain")
-    if not isinstance(domain, str) or not domain:
+    if not ev.domain:
         return False, "bad_domain_evidence"
-    if _host_in_domain(urlparse(manifest.endpoint).hostname or "", domain):
+    if _host_in_domain(urlparse(manifest.endpoint).hostname or "", ev.domain):
         return True, "ok"
     return False, "domain_mismatch"
 

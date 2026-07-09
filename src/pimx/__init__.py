@@ -17,6 +17,7 @@ from .admission import (
     admit_manifest,
     domain_evidence_verifier,
 )
+from .audit import audit_record
 from .crypto import (
     JWK,
     b64u_decode,
@@ -26,10 +27,20 @@ from .crypto import (
     public_jwk,
     public_key_from_jwk,
 )
-from .membership import MemberRecord, MembershipTable, PeerState
+from .membership import (
+    DisclosurePolicy,
+    MemberRecord,
+    MembershipTable,
+    PeerState,
+    apply_revocation_notice,
+    disclose_members,
+)
 from .net import SSRFError
 from .models import (
+    AdmissionEvidence,
     Disclosure,
+    DomainProofEvidence,
+    GenericAdmissionEvidence,
     IntroduceRequest,
     IntroduceResponse,
     Manifest,
@@ -43,9 +54,15 @@ from .models import (
     Signature,
     SignedRequest,
 )
-from .protocols import NonceCache
+from .protocols import (
+    MembershipStore,
+    NonceCache,
+    RateLimiter,
+    TokenBucketRateLimiter,
+)
 from .signing import (
     build_signed_request,
+    check_body_size,
     check_manifest,
     find_jwk,
     sha256_hex,
@@ -71,6 +88,7 @@ __all__ = [
     "AdmissionPolicy",
     "admit_manifest",
     "domain_evidence_verifier",
+    "audit_record",
     "JWK",
     "b64u_decode",
     "b64u_encode",
@@ -78,10 +96,16 @@ __all__ = [
     "generate_key",
     "public_jwk",
     "public_key_from_jwk",
+    "DisclosurePolicy",
     "MemberRecord",
     "MembershipTable",
     "PeerState",
+    "apply_revocation_notice",
+    "disclose_members",
+    "AdmissionEvidence",
     "Disclosure",
+    "DomainProofEvidence",
+    "GenericAdmissionEvidence",
     "IntroduceRequest",
     "IntroduceResponse",
     "Manifest",
@@ -95,8 +119,12 @@ __all__ = [
     "Signature",
     "SignedRequest",
     "EvidenceVerifier",
+    "MembershipStore",
     "NonceCache",
+    "RateLimiter",
+    "TokenBucketRateLimiter",
     "build_signed_request",
+    "check_body_size",
     "check_manifest",
     "find_jwk",
     "sha256_hex",

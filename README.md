@@ -67,6 +67,7 @@ or registry policy. Those belong to the host application.
 | Manifests | Pydantic wire models, fetch-time verification, signing, freshness checks | key lifecycle, publication URL, revision policy |
 | Signed requests | envelope creation and verification | request routing and response handling |
 | Replay protection | `NonceCache` protocol and nonce-claim logic | the cache object passed at verification time |
+| Rate limiting | `RateLimiter` protocol and in-memory `TokenBucketRateLimiter` | distributed per-peer limiter state |
 | Admission | policy checks and verifier callback port | trust material and evidence validation rules |
 | Federation calls | async `httpx` helpers for manifests, introductions, and members | peer selection, retries policy, logging, metrics |
 | Server | no server | your HTTP stack, routing, middleware, and deployment runtime |
@@ -268,6 +269,16 @@ The nonce key is scoped by federation, source node, target node, and nonce. It
 is claimed only after the signature, target, method, path, timestamp, and body
 hash are valid. Failed unauthenticated requests do not consume nonces.
 
+For per-peer request throttling, hosts can inject anything that implements the
+`RateLimiter` protocol. `TokenBucketRateLimiter` is an in-memory reference
+implementation that reads `Manifest.limits.max_query_rps_per_peer`; production
+deployments should keep the bucket state in Redis, Valkey, or an equivalent
+shared store.
+
+For audit logging, `audit_record(...)` builds a flat ADR-shaped dict with an
+ISO-Z timestamp. Feed that dict to your JSON logger, JSONL sink, or SIEM
+adapter; pimx does not own logging transport.
+
 ## Admission
 
 Admission is local policy. pimx validates the manifest signature, freshness,
@@ -319,10 +330,11 @@ references. pimx only signs and verifies the protocol exchange.
 | `pimx.models` | Pydantic wire models for manifests, introductions, membership, signatures, and signed request envelopes. |
 | `pimx.crypto` | Ed25519/JWK conversion, base64url helpers, and RFC 8785 canonical JSON bytes. |
 | `pimx.signing` | Manifest signing/checking and signed request construction/verification. |
+| `pimx.audit` | Pure audit record builder for host logging sinks. |
 | `pimx.admission` | Local manifest admission checks and host-supplied evidence verifier protocol. |
 | `pimx.membership` | In-memory membership state helpers; persistence remains host-owned. |
 | `pimx.client` | Async `httpx` helpers for manifest fetch, introduction, and member exchange. |
-| `pimx.protocols` | Structural protocols such as `NonceCache`. |
+| `pimx.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
 
 ## Usage scenarios
 

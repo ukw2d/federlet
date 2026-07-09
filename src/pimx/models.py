@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
 
@@ -45,6 +45,24 @@ class ManifestLimits(BaseModel):
     max_results: int | None = None
 
 
+class GenericAdmissionEvidence(BaseModel):
+    """Host-owned admission evidence with a tagged wire shape."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+
+
+class DomainProofEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["domain_proof"] = "domain_proof"
+    domain: str
+
+
+AdmissionEvidence = DomainProofEvidence | GenericAdmissionEvidence
+
+
 class Manifest(BaseModel):
     node_id: str
     org_id: str
@@ -57,7 +75,7 @@ class Manifest(BaseModel):
     auth_methods: list[str] = Field(default_factory=lambda: ["signed_http"])
     membership: Membership
     capability_summary_url: str | None = None
-    admission_evidence: dict[str, Any] | None = None
+    admission_evidence: AdmissionEvidence | None = None
     disclosure: Disclosure | None = None
     limits: ManifestLimits | None = None
     issued_at: AwareDatetime | None = None
