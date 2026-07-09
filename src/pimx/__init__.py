@@ -65,6 +65,7 @@ from .protocols import (
     RateLimiter,
     TokenBucketRateLimiter,
 )
+from .refresh import ManifestRefreshDecision, refresh_peer_manifest
 from .signing import (
     build_signed_request,
     check_body_size,
@@ -133,6 +134,8 @@ __all__ = [
     "NonceCache",
     "RateLimiter",
     "TokenBucketRateLimiter",
+    "ManifestRefreshDecision",
+    "refresh_peer_manifest",
     "build_signed_request",
     "check_body_size",
     "check_manifest",

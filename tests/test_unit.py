@@ -20,6 +20,7 @@ from pimx import (
     Manifest,
     ManifestVerificationError,
     ManifestLimits,
+    ManifestRefreshDecision,
     MemberRecord,
     MembersResponse,
     Membership,
@@ -51,6 +52,7 @@ from pimx import (
     KeyContinuityPolicy,
     public_jwk,
     public_key_from_jwk,
+    refresh_peer_manifest,
     sha256_hex,
     sign_model,
     sign_manifest,
@@ -1070,6 +1072,225 @@ async def test_fetch_manifest_rejects_unverified_manifest(manifest_update, reaso
             await client.fetch_manifest("http://127.0.0.1/manifest.json")
     finally:
         await client.close()
+
+
+async def test_refresh_peer_manifest_returns_unchanged_for_same_revision():
+    import httpx
+
+    peer_key = generate_key()
+    current = _manifest(peer_key, revision=12)
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=current.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decision = await refresh_peer_manifest(
+            client,
+            current,
+            "http://127.0.0.1/manifest.json",
+        )
+    finally:
+        await client.close()
+
+    assert isinstance(decision, ManifestRefreshDecision)
+    assert decision.action == "unchanged"
+    assert decision.reason == "ok"
+    assert decision.old_revision == 12
+    assert decision.new_revision == 12
+    assert decision.manifest == current
+
+
+async def test_refresh_peer_manifest_accepts_revision_bump():
+    import httpx
+
+    peer_key = generate_key()
+    current = _manifest(peer_key, revision=12)
+    refreshed = _manifest(peer_key, revision=13)
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decision = await refresh_peer_manifest(
+            client,
+            current,
+            "http://127.0.0.1/manifest.json",
+        )
+    finally:
+        await client.close()
+
+    assert decision.action == "accept"
+    assert decision.reason == "revision_bump"
+    assert decision.old_revision == 12
+    assert decision.new_revision == 13
+    assert decision.manifest == refreshed
+    assert decision.key_continuity is not None
+    assert decision.key_continuity.action == "accept"
+
+
+async def test_refresh_peer_manifest_quarantines_expired_manifest():
+    import httpx
+
+    peer_key = generate_key()
+    now = datetime.now(timezone.utc)
+    current = _manifest(peer_key, revision=12)
+    expired = _manifest(
+        peer_key,
+        revision=13,
+        issued_at=_iso(now - timedelta(days=8)),
+        expires_at=_iso(now - timedelta(days=1)),
+    )
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=expired.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decision = await refresh_peer_manifest(
+            client,
+            current,
+            "http://127.0.0.1/manifest.json",
+        )
+    finally:
+        await client.close()
+
+    assert decision.action == "quarantine"
+    assert decision.reason == "stale_manifest"
+    assert decision.old_revision == 12
+    assert decision.new_revision is None
+    assert decision.manifest is None
+
+
+async def test_refresh_peer_manifest_accepts_old_key_signed_rotation():
+    import httpx
+
+    old_key, new_key = generate_key(), generate_key()
+    current = _manifest(old_key, key_id="org-a-k1", revision=12)
+    refreshed = _manifest(
+        old_key,
+        key_id="org-a-k1",
+        revision=13,
+        public_keys=[
+            PublicKey(key_id="org-a-k1", public_jwk=public_jwk(old_key)),
+            PublicKey(key_id="org-a-k2", public_jwk=public_jwk(new_key)),
+        ],
+    )
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decision = await refresh_peer_manifest(
+            client,
+            current,
+            "http://127.0.0.1/manifest.json",
+        )
+    finally:
+        await client.close()
+
+    assert decision.action == "accept"
+    assert decision.reason == "revision_bump"
+    assert decision.key_continuity is not None
+    assert decision.key_continuity.reason == "signed_rotation"
+
+
+async def test_refresh_peer_manifest_quarantines_unauthorized_rotation():
+    import httpx
+
+    old_key, new_key = generate_key(), generate_key()
+    current = _manifest(old_key, key_id="org-a-k1", revision=12)
+    refreshed = _manifest(new_key, key_id="org-a-k2", revision=13)
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decision = await refresh_peer_manifest(
+            client,
+            current,
+            "http://127.0.0.1/manifest.json",
+        )
+    finally:
+        await client.close()
+
+    assert decision.action == "quarantine"
+    assert decision.reason == "stale_manifest"
+    assert decision.manifest == refreshed
+    assert decision.key_continuity is not None
+    assert decision.key_continuity.action == "quarantine"
+
+
+async def test_refresh_peer_manifest_rejects_rotation_when_policy_denies():
+    import httpx
+
+    old_key, new_key = generate_key(), generate_key()
+    current = _manifest(old_key, key_id="org-a-k1", revision=12)
+    refreshed = _manifest(new_key, key_id="org-a-k2", revision=13)
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decision = await refresh_peer_manifest(
+            client,
+            current,
+            "http://127.0.0.1/manifest.json",
+            key_continuity_policy=KeyContinuityPolicy(allow_key_rotation=False),
+        )
+    finally:
+        await client.close()
+
+    assert decision.action == "reject"
+    assert decision.reason == "rotation_denied"
+    assert decision.key_continuity is not None
+    assert decision.key_continuity.action == "reject"
 
 
 def test_public_crypto_and_signing_helpers_are_exported():
