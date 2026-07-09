@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 from harness import FederationNode
-from pimx import FederationClient, Manifest, Query, IntroduceRequest
+from pimx import FederationClient, Manifest, IntroduceRequest
 from pimx.crypto import b64u_encode
 from pimx.signing import sign_dict
 
@@ -49,76 +49,44 @@ def _intro_for(newcomer: FederationNode) -> IntroduceRequest:
 
 @pytest.fixture
 def org_a():
-    node = FederationNode(
-        "dir:org-a:prod", "org-a", FED,
-        records=[{
-            "record_id": "agent:org-a:po-agent", "record_type": "oasf-agent",
-            "name": "Purchase Order Agent", "summary": "Creates purchase orders.",
-            "skills": ["po.create"],
-        }],
-    ).start()
+    node = FederationNode("dir:org-a:prod", "org-a", FED).start()
     yield node
     node.stop()
 
 
 @pytest.fixture
 def org_b():
-    node = FederationNode(
-        "dir:org-b:prod", "org-b", FED,
-        records=[{
-            "record_id": "agent:org-b:invoice-agent", "record_type": "oasf-agent",
-            "name": "Invoice Reconciliation Agent",
-            "summary": "Reconciles supplier invoices against purchase orders.",
-            "skills": ["invoice.reconcile"],
-        }],
-    ).start()
+    node = FederationNode("dir:org-b:prod", "org-b", FED).start()
     yield node
     node.stop()
 
 
 # --- Scenario 1: A and B already federate --------------------------------------
 
-async def test_two_stores_query_and_fetch(org_a, org_b):
+async def test_two_nodes_exchange_membership(org_a, org_b):
     step("SCENARIO 1: Org A and Org B already federate")
 
     step("A and B establish mutual trust (pre-seeded manifests)")
     org_a.seed(org_b)
     org_b.seed(org_a)
 
-    step("A's requester runs a federated search: 'reconcile invoices'")
+    step("A requests B's signed membership list")
     client = _client(org_a)
-    q = Query(query_id="q1", query={"text": "reconcile invoices"})
-    results, coverage = await client.federated_query(org_a.eligible_peer_manifests(), q)
-    log.info("    A received %d card(s): %s", len(results), [r.record_id for r in results])
-    log.info("    coverage: %s", coverage)
-
-    assert [r.record_id for r in results] == ["agent:org-b:invoice-agent"]
-    assert coverage.responded_peers == 1
-    assert coverage.timed_out_peers == []
-    assert coverage.membership_view == "local"
-
-    step("A fetches the full record from its owner (Org B)")
-    record = await client.fetch_record(org_b.manifest, "agent:org-b:invoice-agent")
-    log.info("    fetched full record: %s", record["record_id"])
-    assert record["skills"] == ["invoice.reconcile"]
+    members = await client.get_members(org_b.manifest)
+    learned = {m.node_id for m in members.members}
+    log.info("    A learned peers from B: %s", sorted(learned))
+    assert "dir:org-a:prod" in learned
     await client.close()
 
 
 # --- Scenario 2: Org C joins via introduction + membership exchange ------------
 
-async def test_third_store_joins_and_becomes_queryable(org_a, org_b):
+async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
     step("SCENARIO 2: Org C wants to join a network where A and B already federate")
     org_a.seed(org_b)
     org_b.seed(org_a)
 
-    org_c = FederationNode(
-        "dir:org-c:prod", "org-c", FED,
-        records=[{
-            "record_id": "agent:org-c:supplier-agent", "record_type": "oasf-agent",
-            "name": "Supplier Lookup Agent", "summary": "Looks up approved suppliers.",
-            "skills": ["supplier.lookup"],
-        }],
-    ).start()
+    org_c = FederationNode("dir:org-c:prod", "org-c", FED).start()
     try:
         c_client = _client(org_c)
 
@@ -145,16 +113,12 @@ async def test_third_store_joins_and_becomes_queryable(org_a, org_b):
         log.info("    C learned peers from A: %s", sorted(learned))
         assert "dir:org-b:prod" in learned
 
-        step("A now fans out a query including the newly-admitted C")
+        step("A's local membership table now includes the newly admitted C")
         a_client = _client(org_a)
-        q = Query(query_id="q2", query={"filters": {"skills": ["supplier.lookup"]}})
-        results, coverage = await a_client.federated_query(org_a.eligible_peer_manifests(), q)
-        owners = {r.record_id for r in results}
-        log.info("    A received cards: %s", sorted(owners))
-        log.info("    coverage: %s", coverage)
-        assert "agent:org-c:supplier-agent" in owners
-        assert coverage.known_peers == 2  # B and C
-        assert coverage.responded_peers == 2
+        assert {m.node_id for m in org_a.eligible_peer_manifests()} == {
+            "dir:org-b:prod",
+            "dir:org-c:prod",
+        }
         await a_client.close()
         await c_client.close()
     finally:
@@ -164,13 +128,12 @@ async def test_third_store_joins_and_becomes_queryable(org_a, org_b):
 # --- Scenario 3: authentication is enforced ------------------------------------
 
 async def test_unsigned_request_is_rejected(org_a, org_b):
-    step("SCENARIO 3a: an UNSIGNED query must be rejected")
+    step("SCENARIO 3a: an UNSIGNED membership request must be rejected")
     org_a.seed(org_b)
     import httpx
 
-    body = Query(query_id="q3", query={"text": "anything"}).model_dump_json().encode()
     async with httpx.AsyncClient() as c:
-        r = await c.post(f"{org_b.endpoint}/query", content=body)
+        r = await c.get(f"{org_b.endpoint}/members")
     log.info("    B responded %d %s", r.status_code, r.json())
     assert r.status_code == 401
     assert r.json()["error"] == "missing_signature"
@@ -180,7 +143,7 @@ async def test_wrong_federation_introduction_is_rejected(org_a):
     step("SCENARIO 3b: an introduction from a DIFFERENT federation must be rejected")
     import httpx
 
-    outsider = FederationNode("dir:evil:prod", "evil", "other-federation", records=[])
+    outsider = FederationNode("dir:evil:prod", "evil", "other-federation")
     outsider.start()
     try:
         client = FederationClient(

@@ -132,11 +132,17 @@ async def verify_signed_request(
     jwk: JWK,
     *,
     self_node_id: str,
+    method: str,
+    path: str,
     body: bytes = b"",
     max_skew_seconds: int = 300,
     cache: NonceCache | None = None,
 ) -> tuple[bool, str]:
     """Returns (ok, reason). Caller supplies the signer's current JWK.
+
+    `method` and `path` must come from the actual inbound HTTP request, not
+    from the signed envelope. They bind the signature to the route handling the
+    request and must be checked before a nonce is claimed.
 
     When `cache` is given (any NonceCache the host injects), the nonce is
     claimed for replay protection. The claim happens only AFTER the signature
@@ -149,6 +155,10 @@ async def verify_signed_request(
         return False, "unsigned"
     if env.target_node_id != self_node_id:
         return False, "wrong_target"
+    if env.method != method.upper():
+        return False, "method_mismatch"
+    if env.path != path:
+        return False, "path_mismatch"
     if env.body_sha256 != sha256_hex(body):
         return False, "body_mismatch"
     if abs((utc_now() - env.timestamp).total_seconds()) > max_skew_seconds:

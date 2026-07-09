@@ -3,7 +3,12 @@
 A hubless HTTPS federation protocol for directory nodes (ADR-005).
 """
 
-from .client import Coverage, FederationClient, SkippedPeer
+from .client import (
+    SIGNATURE_HEADER,
+    FederationClient,
+    ManifestVerificationError,
+    ResponseSignatureError,
+)
 from .admission import (
     AdmissionDecision,
     AdmissionPolicy,
@@ -11,7 +16,15 @@ from .admission import (
     admit_manifest,
     domain_evidence_verifier,
 )
-from .crypto import generate_key, public_jwk
+from .crypto import (
+    JWK,
+    b64u_decode,
+    b64u_encode,
+    canonical_bytes,
+    generate_key,
+    public_jwk,
+    public_key_from_jwk,
+)
 from .membership import MemberRecord, MembershipTable, PeerState
 from .net import SSRFError
 from .models import (
@@ -22,9 +35,6 @@ from .models import (
     Membership,
     MembersResponse,
     PublicKey,
-    Query,
-    QueryResponse,
-    QueryResult,
     Signature,
     SignedRequest,
 )
@@ -33,22 +43,33 @@ from .signing import (
     build_signed_request,
     check_manifest,
     find_jwk,
+    sha256_hex,
+    sign_dict,
     sign_manifest,
+    sign_model,
+    verify_dict,
     verify_manifest,
+    verify_model,
     verify_signed_request,
 )
 
 __all__ = [
-    "Coverage",
     "FederationClient",
-    "SkippedPeer",
+    "ManifestVerificationError",
+    "ResponseSignatureError",
+    "SIGNATURE_HEADER",
     "SSRFError",
     "AdmissionDecision",
     "AdmissionPolicy",
     "admit_manifest",
     "domain_evidence_verifier",
+    "JWK",
+    "b64u_decode",
+    "b64u_encode",
+    "canonical_bytes",
     "generate_key",
     "public_jwk",
+    "public_key_from_jwk",
     "MemberRecord",
     "MembershipTable",
     "PeerState",
@@ -59,9 +80,6 @@ __all__ = [
     "Membership",
     "MembersResponse",
     "PublicKey",
-    "Query",
-    "QueryResponse",
-    "QueryResult",
     "Signature",
     "SignedRequest",
     "EvidenceVerifier",
@@ -69,7 +87,12 @@ __all__ = [
     "build_signed_request",
     "check_manifest",
     "find_jwk",
+    "sha256_hex",
+    "sign_dict",
     "sign_manifest",
+    "sign_model",
+    "verify_dict",
     "verify_manifest",
+    "verify_model",
     "verify_signed_request",
 ]

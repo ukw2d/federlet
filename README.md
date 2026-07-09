@@ -10,10 +10,11 @@ pimx implements the protocol core from ADR-005:
 - freshness, skew, target, body-hash, and replay checks
 - manifest admission policy
 - membership state helpers
-- an async federation client for query, record fetch, introduction, and member exchange
+- an async client for manifest fetch, introduction, and member exchange
 
 pimx does not run your service. Your application owns the HTTP server, key
-storage, trust material, persistence, observability, and deployment topology.
+storage, trust material, persistence, semantic query/fetch behavior,
+observability, and deployment topology.
 
 ## Install
 
@@ -48,24 +49,27 @@ pip install "pimx[cashews]"
 Use pimx when independent directory nodes need to discover each other and make
 signed, auditable requests without a central hub. Typical examples:
 
-- two organizations already trust each other and want to federate directory queries
+- two organizations already trust each other and want signed peer requests
 - a new organization wants to join an existing federation through an introduction flow
-- a directory wants to return partial local results while reporting query coverage honestly
 - a service wants protocol semantics without adopting a bundled server framework
 
 Do not use pimx as a complete federation server. It is the protocol library you
-wire into your ASGI, worker, or service runtime.
+wire into your HTTP adapter, worker, or service runtime.
+
+pimx deliberately does not implement semantic directory search, record fetch,
+query fan-out, coverage calculation, principal mapping, namespace authorization,
+or registry policy. Those belong to the host application.
 
 ## Core concepts
 
 | Concern | pimx provides | Your application provides |
 | --- | --- | --- |
-| Manifests | Pydantic wire models, signing, verification, freshness checks | key lifecycle, publication URL, revision policy |
+| Manifests | Pydantic wire models, fetch-time verification, signing, freshness checks | key lifecycle, publication URL, revision policy |
 | Signed requests | envelope creation and verification | request routing and response handling |
 | Replay protection | `NonceCache` protocol and nonce-claim logic | the cache object passed at verification time |
 | Admission | policy checks and verifier callback port | trust material and evidence validation rules |
-| Federation calls | async `httpx` client helpers | peer selection, retries policy, logging, metrics |
-| Server | no server | FastAPI, Starlette, aiohttp, or your existing HTTP stack |
+| Federation calls | async `httpx` helpers for manifests, introductions, and members | peer selection, retries policy, logging, metrics |
+| Server | no server | your HTTP stack, routing, middleware, and deployment runtime |
 
 ## Quick start
 
@@ -116,43 +120,56 @@ special-purpose verification.
 
 ```python
 from cashews import Cache
-from fastapi import HTTPException, Request
 
-from pimx import SignedRequest, find_jwk, verify_signed_request
+from pimx import SIGNATURE_HEADER, SignedRequest, find_jwk, verify_signed_request
 
 nonce_cache = Cache()
 nonce_cache.setup("redis://redis.internal:6379/0")
 
 
+class UnauthorizedPeerRequest(ValueError):
+    pass
+
+
 async def verify_peer_request(
-    request: Request,
     *,
+    signature_header: str | None,
+    method: str,
+    path: str,
+    body: bytes,
     peer_manifest,
     self_node_id: str,
 ) -> None:
-    raw_body = await request.body()
-    envelope = SignedRequest.model_validate_json(request.headers["X-PIMX-Signature"])
+    if not signature_header:
+        raise UnauthorizedPeerRequest("missing_signature")
+
+    envelope = SignedRequest.model_validate_json(signature_header)
     if envelope.signature is None:
-        raise HTTPException(401, "unsigned")
+        raise UnauthorizedPeerRequest("unsigned")
 
     jwk = find_jwk(peer_manifest.public_keys, envelope.signature.key_id)
     if jwk is None:
-        raise HTTPException(401, "unknown_key")
+        raise UnauthorizedPeerRequest("unknown_key")
 
     ok, reason = await verify_signed_request(
         envelope,
         jwk,
         self_node_id=self_node_id,
-        body=raw_body,
+        method=method,
+        path=path,
+        body=body,
         cache=nonce_cache,
     )
     if not ok:
-        raise HTTPException(401, reason)
+        raise UnauthorizedPeerRequest(reason)
 ```
 
+Your HTTP adapter decides how to map `UnauthorizedPeerRequest` to a response
+status and how to obtain the header value, for example from `SIGNATURE_HEADER`.
+
 The nonce key is scoped by federation, source node, target node, and nonce. It
-is claimed only after the signature, target, timestamp, and body hash are valid.
-Failed unauthenticated requests do not consume nonces.
+is claimed only after the signature, target, method, path, timestamp, and body
+hash are valid. Failed unauthenticated requests do not consume nonces.
 
 ### 3. Admit peer manifests
 
@@ -176,12 +193,13 @@ if not decision.accepted:
     raise ValueError(f"peer rejected: {decision.reason}")
 ```
 
-### 4. Call peers
+### 4. Call peers for protocol exchange
 
-`FederationClient` signs outbound requests and verifies signed query responses.
+`FederationClient` verifies fetched manifests, signs outbound requests, and
+verifies signed introduction and membership responses.
 
 ```python
-from pimx import FederationClient, Query
+from pimx import FederationClient
 
 async with FederationClient(
     node_id="dir:org-a:prod",
@@ -190,31 +208,23 @@ async with FederationClient(
     key_id=key_id,
     manifest_revision=signed_manifest.revision,
 ) as client:
-    results, coverage = await client.federated_query(
-        peers=[org_b_manifest, org_c_manifest],
-        query=Query(
-            query_id="q-2026-07-02-001",
-            query={"text": "reconcile supplier invoices"},
-            limit=10,
-            timeout_ms=2000,
-        ),
-    )
+    peer_manifest = await client.fetch_manifest(org_b_manifest_url)
+    members = await client.get_members(peer_manifest)
 ```
 
-`coverage` reports the local view: known peers, queried peers, responders,
-timeouts, and skipped peers. It is not a global completeness claim.
+Your application decides what to do with accepted peer manifests and member
+references. pimx only signs and verifies the protocol exchange.
 
 ## Usage scenarios
 
-### Scenario: existing peers query each other
+### Scenario: existing peers exchange membership
 
 1. Org A and Org B exchange signed manifest URLs through an existing trust path.
 2. Each service fetches and verifies the other's manifest.
 3. Each service admits the peer with its local `AdmissionPolicy`.
-4. Org A calls `federated_query([org_b_manifest], query)`.
-5. Org B verifies the signed request, executes the local query, signs the response,
-   and returns result cards.
-6. Org A verifies the response signature and merges the results with coverage.
+4. Org A calls `get_members(org_b_manifest)`.
+5. Org B verifies the signed request and signs the membership response.
+6. Org A verifies the response signature and treats returned members as discovery hints.
 
 This is the simplest steady-state deployment. No central directory is required.
 
@@ -225,20 +235,20 @@ This is the simplest steady-state deployment. No central directory is required.
 3. Org C sends a signed `IntroduceRequest` to seed peers.
 4. Each seed peer admits or rejects Org C independently.
 5. Org C calls `get_members` to learn additional manifest URLs.
-6. Future queries include Org C once local membership state marks it active.
+6. The host may include Org C in its own query or routing layer once local membership state marks it active.
 
 The integration test in `tests/test_federation.py` exercises this flow with
 three local nodes.
 
 ### Scenario: a peer is slow or unhealthy
 
-1. The client fans out a query to eligible local peers.
-2. Timeouts and transport failures are recorded in `coverage`.
-3. `MembershipTable` can move repeatedly failing peers into cooldown.
-4. A later success moves the peer back to active.
+1. The host probes or calls eligible peers on its own schedule.
+2. The host records timeouts and transport failures.
+3. `MembershipTable` can model cooldown for repeatedly failing peers.
+4. A later host-observed success moves the peer back to active.
 
-This keeps the federation useful during partial outages while preserving an
-honest report of which peers answered.
+This keeps local peer selection useful during partial outages without making
+pimx own a background scheduler.
 
 ## Production notes
 
@@ -251,8 +261,8 @@ honest report of which peers answered.
   admission reject private, loopback, link-local, and reserved endpoints.
 - Treat `domain_evidence_verifier` as a minimal sample for domain-shaped claims.
   Use your own verifier for real organizational trust.
-- Add application metrics around admission decisions, verification failures,
-  query coverage, and peer cooldown state.
+- Add application metrics around admission decisions, verification failures, and
+  peer cooldown state.
 
 ## Development
 
@@ -267,7 +277,7 @@ The tests include:
 - signed request replay protection
 - admission policy failures
 - SSRF guard behavior
-- federation query, introduction, membership exchange, and rejection scenarios
+- introduction, membership exchange, and rejection scenarios
 
 ## API surface
 
@@ -277,18 +287,40 @@ Primary imports are re-exported from `pimx`:
 from pimx import (
     AdmissionPolicy,
     FederationClient,
+    IntroduceRequest,
+    IntroduceResponse,
+    JWK,
     Manifest,
+    ManifestVerificationError,
+    MembersResponse,
     MembershipTable,
-    Query,
+    NonceCache,
+    ResponseSignatureError,
+    SIGNATURE_HEADER,
     SignedRequest,
     admit_manifest,
+    b64u_decode,
+    b64u_encode,
     build_signed_request,
+    canonical_bytes,
     check_manifest,
     find_jwk,
     generate_key,
     public_jwk,
+    public_key_from_jwk,
+    sha256_hex,
+    sign_dict,
     sign_manifest,
+    sign_model,
+    verify_dict,
     verify_manifest,
+    verify_model,
     verify_signed_request,
 )
 ```
+
+The lower-level signing helpers are public so downstream tests and host
+adapters can construct signed fixtures without importing `pimx.signing`
+directly. Production request verification should still go through
+`verify_signed_request`, because it performs target, method, path, body-hash,
+timestamp, signature, and nonce checks in one place.

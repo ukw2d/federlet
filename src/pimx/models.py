@@ -112,30 +112,3 @@ class SignedRequest(BaseModel):
     @field_serializer("timestamp", when_used="json")
     def _ser_ts(self, dt: datetime) -> str:
         return iso_z(dt) or ""
-
-
-class Query(BaseModel):
-    query_id: str
-    query: dict[str, Any]
-    requested_fields: list[str] = Field(default_factory=list)
-    limit: int = 20
-    timeout_ms: int = 2000
-    disclosure_context: dict[str, Any] = Field(default_factory=dict)
-
-
-class QueryResult(BaseModel):
-    record_id: str
-    record_type: str | None = None
-    name: str | None = None
-    summary: str | None = None
-    owner_org: str | None = None
-    fetch_url: str | None = None
-    provenance: dict[str, Any] = Field(default_factory=dict)
-
-
-class QueryResponse(BaseModel):
-    query_id: str
-    source_node_id: str
-    results: list[QueryResult] = Field(default_factory=list)
-    coverage: dict[str, Any] = Field(default_factory=dict)
-    signature: Signature | None = None

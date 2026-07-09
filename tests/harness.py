@@ -2,7 +2,8 @@
 
 This is the *server side* deliberately kept OUT of the library: it wires pimx's
 pure verifiers/signers into a stdlib http.server so tests can federate real
-nodes over real sockets. A production host would do the same wiring in FastAPI.
+nodes over real sockets. A production host would do the same wiring in its HTTP
+adapter and routing layer.
 """
 
 from __future__ import annotations
@@ -28,9 +29,6 @@ from pimx import (
     MembershipTable,
     MembersResponse,
     PublicKey,
-    Query,
-    QueryResponse,
-    QueryResult,
     SignedRequest,
     generate_key,
     public_jwk,
@@ -56,12 +54,11 @@ def _free_port() -> int:
 
 class FederationNode:
     def __init__(
-        self, node_id: str, org_id: str, federation_id: str, records: list[dict]
+        self, node_id: str, org_id: str, federation_id: str
     ) -> None:
         self.node_id = node_id
         self.org_id = org_id
         self.federation_id = federation_id
-        self.records = records
         self.key = generate_key()
         self.key_id = f"{node_id}-k1"
         self.port = _free_port()
@@ -128,7 +125,13 @@ class FederationNode:
     # --- inbound authentication --------------------------------------------
 
     def _authenticate(
-        self, sig_header: str, body: bytes, source: Manifest | None = None
+        self,
+        sig_header: str,
+        *,
+        method: str,
+        path: str,
+        body: bytes,
+        source: Manifest | None = None,
     ) -> tuple[bool, str]:
         if not sig_header:
             return False, "missing_signature"
@@ -146,7 +149,13 @@ class FederationNode:
             return False, "unknown_key"
         ok, reason = self._run(
             verify_signed_request(
-                env, jwk, self_node_id=self.node_id, body=body, cache=self.cache
+                env,
+                jwk,
+                self_node_id=self.node_id,
+                method=method,
+                path=path,
+                body=body,
+                cache=self.cache,
             )
         )
         mark = "✓" if ok else "✗"
@@ -178,7 +187,13 @@ class FederationNode:
             )
             return 403, IntroduceResponse(accepted=False, reason="wrong_federation").model_dump()
         # newcomer is unknown; authenticate the request against its own manifest
-        ok, reason = self._authenticate(sig_header, body, source=m)
+        ok, reason = self._authenticate(
+            sig_header,
+            method="POST",
+            path="/federation/v1/members/introduce",
+            body=body,
+            source=m,
+        )
         if not ok:
             return 401, IntroduceResponse(accepted=False, reason=reason).model_dump()
         self._log(f"  → ADMIT {m.node_id}")
@@ -193,7 +208,9 @@ class FederationNode:
 
     def handle_members(self, sig_header: str) -> tuple[int, dict]:
         self._log("← MEMBERS request")
-        ok, reason = self._authenticate(sig_header, b"")
+        ok, reason = self._authenticate(
+            sig_header, method="GET", path="/federation/v1/members", body=b""
+        )
         if not ok:
             return 401, {"error": reason}
         self._log(f"  → disclosing {len(self.peers)} peer(s): {sorted(self.peers)}")
@@ -212,50 +229,6 @@ class FederationNode:
         return 200, self._sign(
             MembersResponse(source_node_id=self.node_id, members=members)
         )
-
-    def handle_query(self, body: bytes, sig_header: str) -> tuple[int, dict]:
-        q = Query.model_validate_json(body)
-        self._log(f"← QUERY {q.query_id} query={q.query}")
-        ok, reason = self._authenticate(sig_header, body)
-        if not ok:
-            return 401, {"error": reason}
-        results = [
-            QueryResult(
-                record_id=r["record_id"],
-                record_type=r.get("record_type"),
-                name=r.get("name"),
-                summary=r.get("summary"),
-                owner_org=self.org_id,
-                fetch_url=f"{self.endpoint}/records/{r['record_id']}",
-                provenance={"node_id": self.node_id},
-            )
-            for r in self.records
-            if _matches(r, q)
-        ]
-        self._log(
-            f"  → matched {len(results)}/{len(self.records)} local record(s): "
-            f"{[r.record_id for r in results]} (signing response)"
-        )
-        return 200, self._sign(
-            QueryResponse(
-                query_id=q.query_id,
-                source_node_id=self.node_id,
-                results=results,
-                coverage={"searched_local_catalogue": True},
-            )
-        )
-
-    def handle_fetch(self, record_id: str, sig_header: str) -> tuple[int, dict]:
-        self._log(f"← FETCH record {record_id}")
-        ok, reason = self._authenticate(sig_header, b"")
-        if not ok:
-            return 401, {"error": reason}
-        rec = next((r for r in self.records if r["record_id"] == record_id), None)
-        if rec is None:
-            self._log("  ✗ record not found → 404")
-            return 404, {"error": "not_found"}
-        self._log("  → returning full record (re-checked authorization)")
-        return 200, rec
 
     # --- server lifecycle ---------------------------------------------------
 
@@ -291,9 +264,6 @@ class FederationNode:
                     self._send(200, {"protocol_versions": ["agent-directory-federation/1"]})
                 elif path == "/federation/v1/members":
                     self._send(*node.handle_members(sig))
-                elif path.startswith("/federation/v1/records/"):
-                    rid = path.split("/federation/v1/records/", 1)[1]
-                    self._send(*node.handle_fetch(rid, sig))
                 else:
                     self._send(404, {"error": "not_found"})
 
@@ -303,8 +273,6 @@ class FederationNode:
                 body = self._read()
                 if path == "/federation/v1/members/introduce":
                     self._send(*node.handle_introduce(body, sig))
-                elif path == "/federation/v1/query":
-                    self._send(*node.handle_query(body, sig))
                 else:
                     self._send(404, {"error": "not_found"})
 
@@ -324,17 +292,3 @@ class FederationNode:
                 self._loop_thread.join(timeout=2)
             self._loop.close()
             self._loop = None
-
-
-def _matches(record: dict, q: Query) -> bool:
-    text = (q.query.get("text") or "").lower()
-    filters = q.query.get("filters") or {}
-    want_skills = set(filters.get("skills") or [])
-    if want_skills and not want_skills & set(record.get("skills", [])):
-        return False
-    if text:
-        hay = " ".join(
-            [record.get("name", ""), record.get("summary", ""), *record.get("skills", [])]
-        ).lower()
-        return any(term in hay for term in text.split())
-    return True

@@ -9,25 +9,37 @@ from cashews import Cache
 from pydantic import ValidationError
 
 from pimx import (
+    JWK,
+    IntroduceRequest,
+    IntroduceResponse,
     Manifest,
+    ManifestVerificationError,
     MemberRecord,
+    MembersResponse,
     Membership,
     MembershipTable,
     PeerState,
     PublicKey,
-    Query,
+    ResponseSignatureError,
+    SIGNATURE_HEADER,
     AdmissionPolicy,
     admit_manifest,
+    b64u_decode,
+    b64u_encode,
     build_signed_request,
+    canonical_bytes,
     check_manifest,
     domain_evidence_verifier,
     generate_key,
     public_jwk,
+    public_key_from_jwk,
+    sha256_hex,
+    sign_model,
     sign_manifest,
     verify_manifest,
     verify_signed_request,
 )
-from pimx.client import FederationClient, ResponseSignatureError
+from pimx.client import FederationClient
 from pimx.net import SSRFError, _assert_public_host
 
 
@@ -239,10 +251,26 @@ async def test_signed_request_roundtrip_and_replay(cache):
         key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
         method="POST", path="/query", body=b'{"x":1}',
     )
-    first = await verify_signed_request(env, jwk, self_node_id="b", body=b'{"x":1}', cache=cache)
+    first = await verify_signed_request(
+        env,
+        jwk,
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
+        cache=cache,
+    )
     assert first == (True, "ok")
     # replay of the same nonce is rejected by the cashews claim
-    replay = await verify_signed_request(env, jwk, self_node_id="b", body=b'{"x":1}', cache=cache)
+    replay = await verify_signed_request(
+        env,
+        jwk,
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
+        cache=cache,
+    )
     assert replay == (False, "replay")
 
 
@@ -264,6 +292,8 @@ async def test_replay_cache_key_is_scoped_to_request_context():
         env,
         public_jwk(key),
         self_node_id="dir:org-b:prod",
+        method="POST",
+        path="/query",
         body=b'{"x":1}',
         max_skew_seconds=120,
         cache=cache,
@@ -288,17 +318,33 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
     )
     forged = env.model_copy(update={"nonce": env.nonce})  # same nonce, wrong key below
     bad = await verify_signed_request(
-        forged, public_jwk(attacker), self_node_id="b", body=b'{"x":1}', cache=cache
+        forged,
+        public_jwk(attacker),
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
+        cache=cache,
     )
     assert bad == (False, "bad_signature")
     # the genuine request with that nonce still goes through
-    ok = await verify_signed_request(env, public_jwk(key), self_node_id="b", body=b'{"x":1}', cache=cache)
+    ok = await verify_signed_request(
+        env,
+        public_jwk(key),
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
+        cache=cache,
+    )
     assert ok == (True, "ok")
 
 
 @pytest.mark.parametrize("kwargs,reason", [
-    ({"self_node_id": "b", "body": b"{}"}, "body_mismatch"),
-    ({"self_node_id": "wrong", "body": b'{"x":1}'}, "wrong_target"),
+    ({"self_node_id": "b", "method": "POST", "path": "/query", "body": b"{}"}, "body_mismatch"),
+    ({"self_node_id": "wrong", "method": "POST", "path": "/query", "body": b'{"x":1}'}, "wrong_target"),
+    ({"self_node_id": "b", "method": "GET", "path": "/query", "body": b'{"x":1}'}, "method_mismatch"),
+    ({"self_node_id": "b", "method": "POST", "path": "/other", "body": b'{"x":1}'}, "path_mismatch"),
 ])
 async def test_signed_request_rejections(kwargs, reason):
     key = generate_key()
@@ -310,12 +356,42 @@ async def test_signed_request_rejections(kwargs, reason):
     assert not ok and why == reason
 
 
-async def test_query_rejects_unsigned_response():
+async def test_method_path_mismatch_does_not_burn_nonce(cache):
+    key = generate_key()
+    env = build_signed_request(
+        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
+        method="POST", path="/query", body=b'{"x":1}',
+    )
+
+    bad = await verify_signed_request(
+        env,
+        public_jwk(key),
+        self_node_id="b",
+        method="POST",
+        path="/other",
+        body=b'{"x":1}',
+        cache=cache,
+    )
+    assert bad == (False, "path_mismatch")
+
+    ok = await verify_signed_request(
+        env,
+        public_jwk(key),
+        self_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
+        cache=cache,
+    )
+    assert ok == (True, "ok")
+
+
+async def test_members_rejects_unsigned_response():
     import httpx
 
     peer_key = generate_key()
     peer = _manifest(peer_key)
-    unsigned = {"query_id": "q", "source_node_id": peer.node_id, "results": []}
+    unsigned = {"source_node_id": peer.node_id, "members": []}
 
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=unsigned)
@@ -329,9 +405,129 @@ async def test_query_rejects_unsigned_response():
     )
     try:
         with pytest.raises(ResponseSignatureError):
-            await client.query(peer, Query(query_id="q", query={}))
+            await client.get_members(peer)
     finally:
         await client.close()
+
+
+async def test_members_accepts_signed_response():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key)
+    signed = sign_model(MembersResponse(source_node_id=peer.node_id), peer_key, "k1")
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        assert await client.get_members(peer) == signed
+    finally:
+        await client.close()
+
+
+async def test_introduce_rejects_bad_signature_response():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key)
+    bad_key = generate_key()
+    signed = sign_model(
+        IntroduceResponse(accepted=True, accepted_node_id=peer.node_id),
+        bad_key,
+        "k1",
+    )
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        intro = IntroduceRequest(
+            federation_id="f",
+            manifest_url="https://caller.example/.well-known/agent-directory.json",
+            manifest=peer,
+            nonce="n",
+            timestamp=datetime.now(timezone.utc),
+        )
+        with pytest.raises(ResponseSignatureError):
+            await client.introduce(peer, intro)
+    finally:
+        await client.close()
+
+
+async def test_fetch_manifest_verifies_signature():
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key)
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=peer.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        assert await client.fetch_manifest("http://127.0.0.1/manifest.json") == peer
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("manifest_update,reason", [
+    ({"signature": None}, "unsigned"),
+    ({"revision": 999}, "bad_signature"),
+])
+async def test_fetch_manifest_rejects_unverified_manifest(manifest_update, reason):
+    import httpx
+
+    peer_key = generate_key()
+    peer = _manifest(peer_key).model_copy(update=manifest_update)
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=peer.model_dump(mode="json", exclude_none=True))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(ManifestVerificationError, match=reason):
+            await client.fetch_manifest("http://127.0.0.1/manifest.json")
+    finally:
+        await client.close()
+
+
+def test_public_crypto_and_signing_helpers_are_exported():
+    key = generate_key()
+    jwk: JWK = public_jwk(key)
+    assert public_key_from_jwk(jwk)
+    assert b64u_decode(b64u_encode(b"abc")) == b"abc"
+    assert canonical_bytes({"b": 2, "a": 1}) == b'{"a":1,"b":2}'
+    assert sha256_hex(b"abc").startswith("sha256:")
+    assert SIGNATURE_HEADER == "X-PIMX-Signature"
 
 
 def test_membership_cooldown_and_recovery():
