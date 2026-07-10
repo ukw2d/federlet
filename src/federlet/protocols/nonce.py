@@ -4,7 +4,7 @@ from typing import Protocol
 
 
 class NonceCache(Protocol):
-    """The one cache operation pimx needs for replay protection.
+    """The one cache operation federlet needs for replay protection.
 
     `verify_signed_request` never constructs or configures a cache; it only
     calls `set(..., exist=False)` on whatever the host injects. A cashews

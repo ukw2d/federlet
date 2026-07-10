@@ -1,9 +1,9 @@
-# pimx
+# federlet
 
-Peer Introduction and Manifest Exchange: a small async Python library for
+Federlet: a small async Python library for
 hubless HTTPS federation between directory nodes.
 
-pimx implements the protocol core from ADR-005:
+federlet implements the protocol core from ADR-005:
 
 - signed node manifests
 - signed HTTP request envelopes
@@ -12,7 +12,7 @@ pimx implements the protocol core from ADR-005:
 - membership state helpers
 - an async client for manifest fetch, introduction, and member exchange
 
-pimx does not run your service. Your application owns the HTTP server, key
+federlet does not run your service. Your application owns the HTTP server, key
 storage, trust material, persistence, semantic query/fetch behavior,
 observability, and deployment topology.
 
@@ -21,7 +21,7 @@ observability, and deployment topology.
 Use `uv` by default:
 
 ```bash
-uv add pimx
+uv add federlet
 ```
 
 For development in this repository:
@@ -34,35 +34,35 @@ uv run pytest
 If your service wants the optional recommended replay-cache backend:
 
 ```bash
-uv add "pimx[cashews]"
+uv add "federlet[cashews]"
 ```
 
 With pip:
 
 ```bash
-pip install pimx
-pip install "pimx[cashews]"
+pip install federlet
+pip install "federlet[cashews]"
 ```
 
-## When to use pimx
+## When to use federlet
 
-Use pimx when independent directory nodes need to discover each other and make
+Use federlet when independent directory nodes need to discover each other and make
 signed, auditable requests without a central hub. Typical examples:
 
 - two organizations already trust each other and want signed peer requests
 - a new organization wants to join an existing federation through an introduction flow
 - a service wants protocol semantics without adopting a bundled server framework
 
-Do not use pimx as a complete federation server. It is the protocol library you
+Do not use federlet as a complete federation server. It is the protocol library you
 wire into your HTTP adapter, worker, or service runtime.
 
-pimx deliberately does not implement semantic directory search, record fetch,
+federlet deliberately does not implement semantic directory search, record fetch,
 query fan-out, coverage calculation, principal mapping, namespace authorization,
 or registry policy. Those belong to the host application.
 
 ## Core concepts
 
-| Concern | pimx provides | Your application provides |
+| Concern | federlet provides | Your application provides |
 | --- | --- | --- |
 | Manifests | Pydantic wire models, fetch-time verification, signing, freshness checks | key lifecycle, publication URL, revision policy |
 | Signed requests | envelope creation and verification | request routing and response handling |
@@ -82,7 +82,7 @@ with replay protection.
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from pimx import (
+from federlet import (
     AdmissionPolicy,
     Manifest,
     Membership,
@@ -210,7 +210,7 @@ Inbound federation endpoints should parse the detached signature envelope,
 choose the sender's current public key from its trusted manifest, then verify
 the request against the actual method, path, target node, and body bytes.
 
-Replay protection is the one place pimx needs cache semantics. Pass any object
+Replay protection is the one place federlet needs cache semantics. Pass any object
 that implements `NonceCache.set(key, value, expire=..., exist=False)`. A
 `cashews.Cache` works directly; in production, back it with Redis or Valkey.
 Omitting `cache` disables replay protection and should be limited to tests or
@@ -219,7 +219,7 @@ special-purpose verification.
 ```python
 from cashews import Cache
 
-from pimx import SIGNATURE_HEADER, SignedRequest, find_jwk, verify_signed_request
+from federlet import SIGNATURE_HEADER, SignedRequest, find_jwk, verify_signed_request
 
 nonce_cache = Cache()
 nonce_cache.setup("redis://redis.internal:6379/0")
@@ -277,17 +277,17 @@ shared store.
 
 For audit logging, `audit_record(...)` builds a flat ADR-shaped dict with an
 ISO-Z timestamp. Feed that dict to your JSON logger, JSONL sink, or SIEM
-adapter; pimx does not own logging transport.
+adapter; federlet does not own logging transport.
 
 ## Admission
 
-Admission is local policy. pimx validates the manifest signature, freshness,
+Admission is local policy. federlet validates the manifest signature, freshness,
 federation id, protocol version, signed-HTTP support, HTTPS endpoint, and
 optional endpoint domain limits. Stronger evidence, such as SPIFFE identities,
 partner credentials, or charter keys, belongs in your callback.
 
 ```python
-from pimx import AdmissionPolicy, admit_manifest, domain_evidence_verifier
+from federlet import AdmissionPolicy, admit_manifest, domain_evidence_verifier
 
 policy = AdmissionPolicy(
     federation_id="supplier-network-prod",
@@ -307,7 +307,7 @@ if not decision.accepted:
 verifies signed introduction and membership responses.
 
 ```python
-from pimx import FederationClient
+from federlet import FederationClient
 
 async with FederationClient(
     node_id="dir:org-a:prod",
@@ -321,20 +321,20 @@ async with FederationClient(
 ```
 
 Your application decides what to do with accepted peer manifests and member
-references. pimx only signs and verifies the protocol exchange.
+references. federlet only signs and verifies the protocol exchange.
 
 ## Module Map
 
 | Module | Purpose |
 | --- | --- |
-| `pimx.models` | Pydantic wire models for manifests, introductions, membership, signatures, and signed request envelopes. |
-| `pimx.crypto` | Ed25519/JWK conversion, base64url helpers, and RFC 8785 canonical JSON bytes. |
-| `pimx.signing` | Manifest signing/checking and signed request construction/verification. |
-| `pimx.audit` | Pure audit record builder for host logging sinks. |
-| `pimx.admission` | Local manifest admission checks and host-supplied evidence verifier protocol. |
-| `pimx.membership` | In-memory membership state helpers; persistence remains host-owned. |
-| `pimx.client` | Async `httpx` helpers for manifest fetch, introduction, and member exchange. |
-| `pimx.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
+| `federlet.models` | Pydantic wire models for manifests, introductions, membership, signatures, and signed request envelopes. |
+| `federlet.crypto` | Ed25519/JWK conversion, base64url helpers, and RFC 8785 canonical JSON bytes. |
+| `federlet.signing` | Manifest signing/checking and signed request construction/verification. |
+| `federlet.audit` | Pure audit record builder for host logging sinks. |
+| `federlet.admission` | Local manifest admission checks and host-supplied evidence verifier protocol. |
+| `federlet.membership` | In-memory membership state helpers; persistence remains host-owned. |
+| `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, and member exchange. |
+| `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
 
 ## Usage scenarios
 
@@ -369,7 +369,7 @@ three local nodes.
 4. A later host-observed success moves the peer back to active.
 
 This keeps local peer selection useful during partial outages without making
-pimx own a background scheduler.
+federlet own a background scheduler.
 
 ## Production notes
 
@@ -402,10 +402,10 @@ The tests include:
 
 ## API surface
 
-Primary imports are re-exported from `pimx`:
+Primary imports are re-exported from `federlet`:
 
 ```python
-from pimx import (
+from federlet import (
     AdmissionDecision,
     AdmissionPolicy,
     EvidenceVerifier,
@@ -451,7 +451,7 @@ from pimx import (
 ```
 
 The lower-level signing helpers are public so downstream tests and host
-adapters can construct signed fixtures without importing `pimx.signing`
+adapters can construct signed fixtures without importing `federlet.signing`
 directly. Production request verification should still go through
 `verify_signed_request`, because it performs target, method, path, body-hash,
 timestamp, signature, and nonce checks in one place.

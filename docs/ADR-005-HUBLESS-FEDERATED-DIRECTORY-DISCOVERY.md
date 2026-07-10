@@ -16,7 +16,7 @@ vector index, card serialization, or agent invocation flow:
   credentials, target auth, and egress authorization.
 - **ADR-005** owns only federation across directory instances.
 
-**Package scope note:** the `pimx` Python package in this repository implements the reusable
+**Package scope note:** the `federlet` Python package in this repository implements the reusable
 protocol-library subset of this ADR: signed manifests, signed HTTP request envelopes, canonical
 JSON signing, JWK/Ed25519 helpers, nonce-cache semantics, admission helpers, membership exchange
 models, and framework-neutral client helpers for manifests, introductions, and members. Semantic

@@ -8,7 +8,7 @@ import pytest
 from cashews import Cache
 from pydantic import ValidationError
 
-from pimx import (
+from federlet import (
     AdmissionEvidence,
     CapabilitySummary,
     DiscoveryRefreshReport,
@@ -71,8 +71,8 @@ from pimx import (
     verify_revocation_notice,
     verify_signed_request,
 )
-from pimx.client import FederationClient
-from pimx.net import SSRFError, _assert_public_host
+from federlet.client import FederationClient
+from federlet.net import SSRFError, _assert_public_host
 
 
 def _iso(dt: datetime) -> str:
@@ -665,7 +665,7 @@ async def test_replay_cache_key_is_scoped_to_request_context():
 
     assert result == (True, "ok")
     assert cache.calls == [(
-        f"pimx:nonce:supplier-network-prod:dir:org-a:prod:dir:org-b:prod:{env.nonce}",
+        f"federlet:nonce:supplier-network-prod:dir:org-a:prod:dir:org-b:prod:{env.nonce}",
         1,
         120,
         False,
@@ -2004,7 +2004,7 @@ def test_public_crypto_and_signing_helpers_are_exported():
     assert b64u_decode(b64u_encode(b"abc")) == b"abc"
     assert canonical_bytes({"b": 2, "a": 1}) == b'{"a":1,"b":2}'
     assert sha256_hex(b"abc").startswith("sha256:")
-    assert SIGNATURE_HEADER == "X-PIMX-Signature"
+    assert SIGNATURE_HEADER == "X-Federlet-Signature"
 
 
 def test_audit_record_includes_required_shape_and_timestamp():

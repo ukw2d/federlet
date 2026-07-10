@@ -1,7 +1,7 @@
 [project]
-name = "pimx"
+name = "federlet"
 version = "0.1.0"
-description = "Peer Introduction and Manifest Exchange: a hubless HTTPS federation protocol for directory nodes."
+description = "Federlet: a hubless HTTPS federation protocol for directory nodes."
 requires-python = ">=3.11"
 dependencies = [
   "cryptography>=42.0.0",
@@ -10,9 +10,9 @@ dependencies = [
   "rfc8785>=0.1.4",
 ]
 
-# pimx never imports a cache backend; it only calls a NonceCache the host
+# federlet never imports a cache backend; it only calls a NonceCache the host
 # injects. cashews is the recommended backend but not required — install it
-# with `pip install pimx[cashews]` (or bring your own object of that shape).
+# with `pip install federlet[cashews]` (or bring your own object of that shape).
 [project.optional-dependencies]
 cashews = ["cashews>=7.5.0"]
 
@@ -21,7 +21,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pimx"]
+packages = ["src/federlet"]
 
 [dependency-groups]
 dev = [

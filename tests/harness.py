@@ -1,6 +1,6 @@
 """In-process federation node for integration tests.
 
-This is the *server side* deliberately kept OUT of the library: it wires pimx's
+This is the *server side* deliberately kept OUT of the library: it wires federlet's
 pure verifiers/signers into a stdlib http.server so tests can federate real
 nodes over real sockets. A production host would do the same wiring in its HTTP
 adapter and routing layer.
@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 
 from cashews import Cache
 
-from pimx import (
+from federlet import (
     DisclosurePolicy,
     IntroduceRequest,
     IntroduceResponse,
@@ -37,12 +37,12 @@ from pimx import (
     verify_manifest,
     verify_signed_request,
 )
-from pimx.signing import sign_model
+from federlet.signing import sign_model
 
 T = TypeVar("T")
 
 
-log = logging.getLogger("pimx.node")
+log = logging.getLogger("federlet.node")
 
 
 def _free_port() -> int:
@@ -83,7 +83,7 @@ class FederationNode:
         self.peers: dict[str, Manifest] = {}
         self.membership_table = MembershipTable()
         # Replay protection via a real cashews backend (mem:// here; a prod host
-        # would point this at redis:// or valkey). pimx is async, so the sync
+        # would point this at redis:// or valkey). federlet is async, so the sync
         # request handlers marshal awaits onto this node's dedicated loop.
         self.cache = Cache()
         self.cache.setup("mem://")
@@ -95,7 +95,7 @@ class FederationNode:
         log.info("      [%s] %s", self.node_id, msg)
 
     def _run(self, coro: Awaitable[T]) -> T:
-        """Run a pimx coroutine on this node's loop from a handler thread."""
+        """Run a federlet coroutine on this node's loop from a handler thread."""
         assert self._loop is not None
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
@@ -240,7 +240,7 @@ class FederationNode:
         self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._loop_thread.start()
         node = self
-        SIG = "X-PIMX-Signature"
+        SIG = "X-Federlet-Signature"
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_):  # silence

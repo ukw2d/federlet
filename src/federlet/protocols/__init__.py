@@ -1,4 +1,4 @@
-"""Structural extension points for host-provided pimx integrations."""
+"""Structural extension points for host-provided federlet integrations."""
 
 from .membership_store import MembershipStore
 from .nonce import NonceCache

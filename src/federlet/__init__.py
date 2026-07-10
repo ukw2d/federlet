@@ -1,4 +1,4 @@
-"""PIMX: Peer Introduction and Manifest Exchange.
+"""Federlet.
 
 A hubless HTTPS federation protocol for directory nodes (ADR-005).
 """

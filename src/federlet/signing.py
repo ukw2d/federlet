@@ -28,7 +28,7 @@ def check_body_size(body: bytes, max_bytes: int | None) -> bool:
 
 def _nonce_cache_key(env: SignedRequest) -> str:
     return (
-        "pimx:nonce:"
+        "federlet:nonce:"
         f"{env.federation_id}:{env.source_node_id}:{env.target_node_id}:{env.nonce}"
     )
 

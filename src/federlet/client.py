@@ -21,7 +21,7 @@ from .models import (
 from .net import _assert_public_host
 from .signing import build_signed_request, check_manifest, verify_response_signature
 
-SIGNATURE_HEADER = "X-PIMX-Signature"
+SIGNATURE_HEADER = "X-Federlet-Signature"
 
 
 class ResponseSignatureError(ValueError):

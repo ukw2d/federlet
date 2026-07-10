@@ -9,13 +9,13 @@ from datetime import datetime, timezone
 import pytest
 
 from harness import FederationNode
-from pimx import FederationClient, Manifest, IntroduceRequest
-from pimx.crypto import b64u_encode
-from pimx.signing import sign_dict
+from federlet import FederationClient, Manifest, IntroduceRequest
+from federlet.crypto import b64u_encode
+from federlet.signing import sign_dict
 
 FED = "supplier-network-prod"
 
-log = logging.getLogger("pimx.test")
+log = logging.getLogger("federlet.test")
 
 
 def step(msg: str) -> None:
