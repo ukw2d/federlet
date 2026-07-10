@@ -1,22 +1,51 @@
 # federlet
 
-[![CI](https://github.com/ukw2d/pimx/actions/workflows/ci.yml/badge.svg)](https://github.com/ukw2d/pimx/actions/workflows/ci.yml)
+[![CI](https://github.com/ukw2d/federlet/actions/workflows/ci.yml/badge.svg)](https://github.com/ukw2d/federlet/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/federlet.svg)](https://pypi.org/project/federlet/)
+[![Python versions](https://img.shields.io/pypi/pyversions/federlet.svg)](https://pypi.org/project/federlet/)
+[![License](https://img.shields.io/pypi/l/federlet.svg)](https://github.com/ukw2d/federlet/blob/main/LICENSE)
+[![Typed](https://img.shields.io/badge/typed-py.typed-blue.svg)](https://typing.python.org/en/latest/spec/distributing.html)
+[![Ruff](https://img.shields.io/badge/lint-ruff-46a2f1.svg)](https://docs.astral.sh/ruff/)
+[![mypy](https://img.shields.io/badge/types-mypy_checked-blue.svg)](https://mypy-lang.org/)
 
-Federlet: a small async Python library for
-hubless HTTPS federation between directory nodes.
+Federlet is an async Python library for decentralized, hubless federation
+between peer directory services. It provides signed manifests, signed HTTP
+requests, Ed25519 verification, replay protection, key-continuity checks, local
+admission policy, SSRF-safe manifest fetching, health probing, revocations, and
+peer discovery helpers.
+
+Use federlet when independent services need zero-trust, service-to-service
+federation without a central registry or control-plane hub. Your application
+keeps control of HTTP routing, persistence, trust policy, key storage, semantic
+search, observability, and deployment topology.
+
+## At a glance
+
+| Question | Answer |
+| --- | --- |
+| What is it? | A framework-neutral protocol library for peer directory federation. |
+| Trust model | Signed manifests, Ed25519 signed requests, local admission policy, and key-continuity checks. |
+| Runtime | Async Python, `httpx`, Pydantic v2, structural protocols for host-owned storage. |
+| Deployment shape | No central hub, no bundled server, no required cache backend. |
+| Host responsibilities | HTTP routing, persistence, private-key storage, trust material, semantic search, logging, metrics, and retries. |
+
+## Features
 
 federlet implements the protocol core from ADR-005:
 
 - signed node manifests
-- signed HTTP request envelopes
-- freshness, skew, target, body-hash, and replay checks
-- manifest admission policy
-- membership state helpers
-- an async client for manifest fetch, introduction, and member exchange
+- signed HTTP request envelopes for peer-to-peer calls
+- Ed25519/JWK helpers and RFC 8785 canonical JSON signing
+- freshness, clock-skew, target, method, path, body-hash, and replay checks
+- local manifest admission policy and key-continuity checks
+- SSRF protection for manifest URLs and admitted endpoints
+- membership, revocation, manifest refresh, and discovery state helpers
+- protocol, health, revocation, capability-summary, and membership client calls
+- structural protocols for host-owned nonce caches, rate limiters, and stores
+- typed Pydantic models and `py.typed` packaging
 
-federlet does not run your service. Your application owns the HTTP server, key
-storage, trust material, persistence, semantic query/fetch behavior,
-observability, and deployment topology.
+federlet does not run your service. It is a framework-neutral protocol library
+you wire into your HTTP adapter, worker, or service runtime.
 
 ## Install
 
@@ -30,6 +59,9 @@ For development in this repository:
 
 ```bash
 uv sync
+uv run ruff check
+uv run ruff format --check
+uv run mypy src
 uv run pytest
 ```
 
@@ -335,7 +367,11 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.audit` | Pure audit record builder for host logging sinks. |
 | `federlet.admission` | Local manifest admission checks and host-supplied evidence verifier protocol. |
 | `federlet.membership` | In-memory membership state helpers; persistence remains host-owned. |
-| `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, and member exchange. |
+| `federlet.refresh` | One-shot manifest refresh and key-continuity decision helper. |
+| `federlet.discovery` | Bounded peer discovery from signed membership hints. |
+| `federlet.health` | Protocol and health probe classification helpers. |
+| `federlet.net` | SSRF guard for manifest and endpoint URLs. |
+| `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, capability summaries, protocol, and health calls. |
 | `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
 
 ## Usage scenarios
@@ -391,6 +427,9 @@ federlet own a background scheduler.
 
 ```bash
 uv sync
+uv run ruff check
+uv run ruff format --check
+uv run mypy src
 uv run pytest
 ```
 
@@ -401,6 +440,7 @@ The tests include:
 - admission policy failures
 - SSRF guard behavior
 - introduction, membership exchange, and rejection scenarios
+- revocation, capability-summary, health, refresh, and discovery flows
 
 ## API surface
 
@@ -410,37 +450,59 @@ Primary imports are re-exported from `federlet`:
 from federlet import (
     AdmissionDecision,
     AdmissionPolicy,
+    CapabilitySummary,
+    DiscoveryOutcome,
+    DiscoveryRefreshReport,
     EvidenceVerifier,
     FederationClient,
+    HealthResponse,
     IntroduceRequest,
     IntroduceResponse,
     JWK,
+    KeyContinuityDecision,
+    KeyContinuityPolicy,
     Manifest,
+    ManifestLimits,
+    ManifestRefreshDecision,
     ManifestVerificationError,
     MemberRecord,
     MemberRef,
     Membership,
     MembersResponse,
     MembershipTable,
+    MissingCapabilitySummaryEndpointError,
+    MissingRevocationsEndpointError,
     NonceCache,
+    PeerHealthProbeResult,
     PeerState,
+    ProtocolResponse,
     PublicKey,
+    RateLimiter,
+    RevocationNotice,
+    RevocationsResponse,
     ResponseSignatureError,
     SIGNATURE_HEADER,
     SSRFError,
     Signature,
     SignedRequest,
+    TokenBucketRateLimiter,
     admit_manifest,
+    apply_revocation_notice,
     b64u_decode,
     b64u_encode,
     build_signed_request,
     canonical_bytes,
+    check_key_continuity,
     check_manifest,
+    disclose_members,
     domain_evidence_verifier,
     find_jwk,
     generate_key,
+    probe_peer_health,
     public_jwk,
     public_key_from_jwk,
+    refresh_discovered_members,
+    refresh_peer_manifest,
     sha256_hex,
     sign_dict,
     sign_manifest,
@@ -448,6 +510,8 @@ from federlet import (
     verify_dict,
     verify_manifest,
     verify_model,
+    verify_response_signature,
+    verify_revocation_notice,
     verify_signed_request,
 )
 ```

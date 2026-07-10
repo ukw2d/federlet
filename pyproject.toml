@@ -1,7 +1,7 @@
 [project]
 name = "federlet"
 version = "0.1.0"
-description = "Federlet: a hubless HTTPS federation protocol for directory nodes."
+description = "Async Python library for decentralized, hubless federation between peer directory services."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -12,12 +12,20 @@ maintainers = [
   { name = "Vlad Andreev", email = "vladyslav_andriyev@epam.com" },
 ]
 keywords = [
+  "async-python",
+  "decentralized",
   "federation",
   "directory",
   "manifest",
   "ed25519",
+  "signed-requests",
   "signed-http",
   "peer-discovery",
+  "service-discovery",
+  "replay-protection",
+  "admission-policy",
+  "ssrf-protection",
+  "zero-trust",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -47,10 +55,10 @@ dependencies = [
 cashews = ["cashews>=7.5.0"]
 
 [project.urls]
-Homepage = "https://github.com/ukw2d/pimx"
-Repository = "https://github.com/ukw2d/pimx"
-Issues = "https://github.com/ukw2d/pimx/issues"
-Documentation = "https://github.com/ukw2d/pimx#readme"
+Homepage = "https://github.com/ukw2d/federlet"
+Repository = "https://github.com/ukw2d/federlet"
+Issues = "https://github.com/ukw2d/federlet/issues"
+Documentation = "https://github.com/ukw2d/federlet#readme"
 
 [build-system]
 requires = ["hatchling"]
