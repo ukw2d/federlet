@@ -73,8 +73,10 @@ include = [
 [dependency-groups]
 dev = [
     "cashews>=7.5.0",
+    "mypy>=2.2.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.21",
 ]
 
 [tool.pytest.ini_options]
@@ -82,3 +84,28 @@ asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(message)s"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
+ignore = [
+  # Keep public enum stringification stable unless we intentionally migrate it.
+  "UP042",
+]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/federlet"]
+show_error_codes = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+strict_equality = true

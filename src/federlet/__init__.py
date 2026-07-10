@@ -3,14 +3,6 @@
 A hubless HTTPS federation protocol for directory nodes (ADR-005).
 """
 
-from .client import (
-    SIGNATURE_HEADER,
-    FederationClient,
-    MissingCapabilitySummaryEndpointError,
-    ManifestVerificationError,
-    MissingRevocationsEndpointError,
-    ResponseSignatureError,
-)
 from .admission import (
     AdmissionDecision,
     AdmissionPolicy,
@@ -22,6 +14,14 @@ from .admission import (
     domain_evidence_verifier,
 )
 from .audit import audit_record
+from .client import (
+    SIGNATURE_HEADER,
+    FederationClient,
+    ManifestVerificationError,
+    MissingCapabilitySummaryEndpointError,
+    MissingRevocationsEndpointError,
+    ResponseSignatureError,
+)
 from .crypto import (
     JWK,
     b64u_decode,
@@ -45,7 +45,6 @@ from .membership import (
     apply_revocation_notice,
     disclose_members,
 )
-from .net import SSRFError
 from .models import (
     AdmissionEvidence,
     CapabilitySummary,
@@ -67,6 +66,7 @@ from .models import (
     Signature,
     SignedRequest,
 )
+from .net import SSRFError
 from .protocols import (
     MembershipStore,
     NonceCache,

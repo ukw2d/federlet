@@ -13,8 +13,9 @@ import json
 import logging
 import socket
 import threading
+from collections.abc import Awaitable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Awaitable, TypeVar
+from typing import TypeVar
 from urllib.parse import urlparse
 
 from cashews import Cache
@@ -54,9 +55,7 @@ def _free_port() -> int:
 
 
 class FederationNode:
-    def __init__(
-        self, node_id: str, org_id: str, federation_id: str
-    ) -> None:
+    def __init__(self, node_id: str, org_id: str, federation_id: str) -> None:
         self.node_id = node_id
         self.org_id = org_id
         self.federation_id = federation_id
@@ -73,7 +72,9 @@ class FederationNode:
             endpoint=self.endpoint,
             protocol_versions=["agent-directory-federation/1"],
             revision=1,
-            public_keys=[PublicKey(key_id=self.key_id, public_jwk=public_jwk(self.key))],
+            public_keys=[
+                PublicKey(key_id=self.key_id, public_jwk=public_jwk(self.key))
+            ],
             membership=Membership(
                 introduce_url=f"{self.endpoint}/members/introduce",
                 members_url=f"{self.endpoint}/members",
@@ -101,7 +102,7 @@ class FederationNode:
 
     # --- peer bookkeeping ---------------------------------------------------
 
-    def seed(self, other: "FederationNode") -> None:
+    def seed(self, other: FederationNode) -> None:
         """Pre-establish mutual knowledge (A and B already accept each other)."""
         self._log(f"seed: pre-trusting {other.node_id}")
         self._admit(other.manifest)
@@ -188,14 +189,21 @@ class FederationNode:
         self._log(f"← INTRODUCE from {m.node_id} (federation={intro.federation_id})")
         if not verify_manifest(intro.manifest):
             self._log("  ✗ manifest signature invalid → reject")
-            return 400, IntroduceResponse(accepted=False, reason="bad_manifest").model_dump()
+            return 400, IntroduceResponse(
+                accepted=False, reason="bad_manifest"
+            ).model_dump()
         self._log("  ✓ manifest signature valid")
-        if intro.federation_id != self.federation_id or self.federation_id not in m.federations:
+        if (
+            intro.federation_id != self.federation_id
+            or self.federation_id not in m.federations
+        ):
             self._log(
                 f"  ✗ federation mismatch (mine={self.federation_id}, "
                 f"theirs={m.federations}) → reject"
             )
-            return 403, IntroduceResponse(accepted=False, reason="wrong_federation").model_dump()
+            return 403, IntroduceResponse(
+                accepted=False, reason="wrong_federation"
+            ).model_dump()
         # newcomer is unknown; authenticate the request against its own manifest
         ok, reason = self._authenticate(
             sig_header,
@@ -235,7 +243,7 @@ class FederationNode:
 
     # --- server lifecycle ---------------------------------------------------
 
-    def start(self) -> "FederationNode":
+    def start(self) -> FederationNode:
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._loop_thread.start()
@@ -264,12 +272,15 @@ class FederationNode:
                 if path == "/.well-known/agent-directory.json":
                     self._send(200, node.manifest.model_dump(exclude_none=True))
                 elif path == "/federation/v1/protocol":
-                    self._send(200, {
-                        "node_id": node.node_id,
-                        "manifest_revision": node.manifest.revision,
-                        "protocol_versions": ["agent-directory-federation/1"],
-                        "auth_methods": ["signed_http"],
-                    })
+                    self._send(
+                        200,
+                        {
+                            "node_id": node.node_id,
+                            "manifest_revision": node.manifest.revision,
+                            "protocol_versions": ["agent-directory-federation/1"],
+                            "auth_methods": ["signed_http"],
+                        },
+                    )
                 elif path == "/federation/v1/health":
                     self._send(200, {"node_id": node.node_id, "status": "ok"})
                 elif path == "/federation/v1/members":

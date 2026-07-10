@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from harness import FederationNode
-from federlet import FederationClient, Manifest, IntroduceRequest
+from federlet import FederationClient, IntroduceRequest, Manifest
 from federlet.crypto import b64u_encode
 from federlet.signing import sign_dict
+from harness import FederationNode
 
 FED = "supplier-network-prod"
 
@@ -39,7 +39,7 @@ def _intro_for(newcomer: FederationNode) -> IntroduceRequest:
         manifest_url=newcomer.manifest_url,
         manifest=newcomer.manifest,
         nonce=b64u_encode(uuid.uuid4().bytes),
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
     data = sign_dict(
         intro.model_dump(mode="json", exclude_none=True), newcomer.key, newcomer.key_id
@@ -62,6 +62,7 @@ def org_b():
 
 
 # --- Scenario 1: A and B already federate --------------------------------------
+
 
 async def test_two_nodes_exchange_membership(org_a, org_b):
     step("SCENARIO 1: Org A and Org B already federate")
@@ -98,6 +99,7 @@ async def test_client_probes_protocol_and_health(org_a, org_b):
 
 # --- Scenario 2: Org C joins via introduction + membership exchange ------------
 
+
 async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
     step("SCENARIO 2: Org C wants to join a network where A and B already federate")
     org_a.seed(org_b)
@@ -110,8 +112,11 @@ async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
         step("C bootstraps: fetch seed manifests from A and B directly (SSRF-checked)")
         a_manifest = await c_client.fetch_manifest(org_a.manifest_url)
         b_manifest = await c_client.fetch_manifest(org_b.manifest_url)
-        log.info("    C fetched + verified manifests for %s and %s",
-                 a_manifest.node_id, b_manifest.node_id)
+        log.info(
+            "    C fetched + verified manifests for %s and %s",
+            a_manifest.node_id,
+            b_manifest.node_id,
+        )
         assert isinstance(a_manifest, Manifest)
         org_c._admit(a_manifest)
         org_c._admit(b_manifest)
@@ -119,7 +124,9 @@ async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
         step("C introduces itself to A and B (each decides independently)")
         resp_a = await c_client.introduce(a_manifest, _intro_for(org_c))
         resp_b = await c_client.introduce(b_manifest, _intro_for(org_c))
-        log.info("    A accepted C: %s | B accepted C: %s", resp_a.accepted, resp_b.accepted)
+        log.info(
+            "    A accepted C: %s | B accepted C: %s", resp_a.accepted, resp_b.accepted
+        )
         assert resp_a.accepted and resp_a.accepted_node_id == "dir:org-c:prod"
         assert resp_b.accepted
         assert "dir:org-c:prod" in org_a.peers
@@ -144,6 +151,7 @@ async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
 
 # --- Scenario 3: authentication is enforced ------------------------------------
 
+
 async def test_unsigned_request_is_rejected(org_a, org_b):
     step("SCENARIO 3a: an UNSIGNED membership request must be rejected")
     org_a.seed(org_b)
@@ -164,14 +172,20 @@ async def test_wrong_federation_introduction_is_rejected(org_a):
     outsider.start()
     try:
         client = FederationClient(
-            node_id=outsider.node_id, federation_id="other-federation",
-            key=outsider.key, key_id=outsider.key_id, allow_private=True,
+            node_id=outsider.node_id,
+            federation_id="other-federation",
+            key=outsider.key,
+            key_id=outsider.key_id,
+            allow_private=True,
         )
         # A rejects the introduction (403) because the federation does not match.
         with pytest.raises(httpx.HTTPStatusError) as exc:
             await client.introduce(org_a.manifest, _intro_for(outsider))
-        log.info("    A rejected outsider: %d %s",
-                 exc.value.response.status_code, exc.value.response.json())
+        log.info(
+            "    A rejected outsider: %d %s",
+            exc.value.response.status_code,
+            exc.value.response.json(),
+        )
         assert exc.value.response.status_code == 403
         assert exc.value.response.json()["reason"] == "wrong_federation"
         await client.close()

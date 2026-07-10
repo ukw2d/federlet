@@ -67,7 +67,7 @@ class FederationClient:
         self.allow_private = allow_private
         self._http = client or httpx.AsyncClient(timeout=10.0, follow_redirects=False)
 
-    async def __aenter__(self) -> "FederationClient":
+    async def __aenter__(self) -> FederationClient:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -125,15 +125,21 @@ class FederationClient:
         self, peer: Manifest, intro: IntroduceRequest
     ) -> IntroduceResponse:
         body = intro.model_dump_json(exclude_none=True).encode()
-        r = await self._send(peer.node_id, "POST", peer.membership.introduce_url, body=body)
+        r = await self._send(
+            peer.node_id, "POST", peer.membership.introduce_url, body=body
+        )
         resp = IntroduceResponse.model_validate(r.json())
         if not _verify_response(peer, resp):
             raise ResponseSignatureError("bad_signature")
         return resp
 
-    async def get_members(self, peer: Manifest, since: str | None = None) -> MembersResponse:
+    async def get_members(
+        self, peer: Manifest, since: str | None = None
+    ) -> MembersResponse:
         params = {"since": since} if since else None
-        r = await self._send(peer.node_id, "GET", peer.membership.members_url, params=params)
+        r = await self._send(
+            peer.node_id, "GET", peer.membership.members_url, params=params
+        )
         resp = MembersResponse.model_validate(r.json())
         if not _verify_response(peer, resp):
             raise ResponseSignatureError("bad_signature")
@@ -145,7 +151,9 @@ class FederationClient:
         if peer.membership.revocations_url is None:
             raise MissingRevocationsEndpointError("missing_revocations_url")
         params = {"since": since} if since else None
-        r = await self._send(peer.node_id, "GET", peer.membership.revocations_url, params=params)
+        r = await self._send(
+            peer.node_id, "GET", peer.membership.revocations_url, params=params
+        )
         resp = RevocationsResponse.model_validate(r.json())
         if not _verify_response(peer, resp):
             raise ResponseSignatureError("bad_signature")
@@ -153,7 +161,9 @@ class FederationClient:
 
     async def get_capability_summary(self, peer: Manifest) -> CapabilitySummary:
         if peer.capability_summary_url is None:
-            raise MissingCapabilitySummaryEndpointError("missing_capability_summary_url")
+            raise MissingCapabilitySummaryEndpointError(
+                "missing_capability_summary_url"
+            )
         r = await self._send(peer.node_id, "GET", peer.capability_summary_url)
         resp = CapabilitySummary.model_validate(r.json())
         if not _verify_response(peer, resp):
@@ -161,7 +171,9 @@ class FederationClient:
         return resp
 
     async def get_protocol(self, peer: Manifest) -> ProtocolResponse:
-        r = await self._send(peer.node_id, "GET", f"{peer.endpoint.rstrip('/')}/protocol")
+        r = await self._send(
+            peer.node_id, "GET", f"{peer.endpoint.rstrip('/')}/protocol"
+        )
         return ProtocolResponse.model_validate(r.json())
 
     async def get_health(self, peer: Manifest) -> HealthResponse:

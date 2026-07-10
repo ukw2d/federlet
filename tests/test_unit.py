@@ -2,46 +2,48 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from cashews import Cache
 from pydantic import ValidationError
 
 from federlet import (
-    AdmissionEvidence,
-    CapabilitySummary,
-    DiscoveryRefreshReport,
     JWK,
+    SIGNATURE_HEADER,
+    AdmissionEvidence,
+    AdmissionPolicy,
+    CapabilitySummary,
     Disclosure,
+    DisclosurePolicy,
+    DiscoveryRefreshReport,
     DomainProofEvidence,
     GenericAdmissionEvidence,
     HealthResponse,
     IntroduceRequest,
     IntroduceResponse,
+    KeyContinuityPolicy,
     Manifest,
-    ManifestVerificationError,
     ManifestLimits,
     ManifestRefreshDecision,
+    ManifestVerificationError,
     MemberRecord,
     MemberRef,
-    MembersResponse,
     Membership,
     MembershipStore,
     MembershipTable,
+    MembersResponse,
     MissingCapabilitySummaryEndpointError,
     MissingRevocationsEndpointError,
-    PeerState,
     PeerHealthProbeResult,
+    PeerState,
     ProtocolResponse,
     PublicKey,
     RateLimiter,
+    ResponseSignatureError,
     RevocationNotice,
     RevocationsResponse,
-    ResponseSignatureError,
-    SIGNATURE_HEADER,
-    AdmissionPolicy,
-    DisclosurePolicy,
+    TokenBucketRateLimiter,
     admit_manifest,
     apply_revocation_notice,
     audit_record,
@@ -52,19 +54,17 @@ from federlet import (
     check_body_size,
     check_key_continuity,
     check_manifest,
+    disclose_members,
     domain_evidence_verifier,
     generate_key,
-    KeyContinuityPolicy,
+    probe_peer_health,
     public_jwk,
     public_key_from_jwk,
-    probe_peer_health,
     refresh_discovered_members,
     refresh_peer_manifest,
     sha256_hex,
-    sign_model,
     sign_manifest,
-    TokenBucketRateLimiter,
-    disclose_members,
+    sign_model,
     verify_manifest,
     verify_model,
     verify_response_signature,
@@ -111,7 +111,9 @@ def _manifest(key, key_id="k1", **extra) -> Manifest:
         "endpoint": "https://dir.org-a.example/federation/v1",
         "revision": 12,
         "public_keys": [PublicKey(key_id=key_id, public_jwk=public_jwk(key))],
-        "membership": Membership(introduce_url="https://x/i", members_url="https://x/m"),
+        "membership": Membership(
+            introduce_url="https://x/i", members_url="https://x/m"
+        ),
     } | extra
     m = Manifest(**data)
     return sign_manifest(m, key, key_id)
@@ -212,17 +214,19 @@ def test_manifest_missing_membership_key_raises_validation_error():
 
 def test_manifest_freshness_is_enforced():
     key = generate_key()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     fresh = _manifest(
-        key, issued_at=_iso(now - timedelta(hours=1)),
+        key,
+        issued_at=_iso(now - timedelta(hours=1)),
         expires_at=_iso(now + timedelta(days=7)),
     )
     assert check_manifest(fresh) == (True, "ok")
     assert verify_manifest(fresh)
 
     expired = _manifest(
-        key, issued_at=_iso(now - timedelta(days=8)),
+        key,
+        issued_at=_iso(now - timedelta(days=8)),
         expires_at=_iso(now - timedelta(days=1)),
     )
     assert check_manifest(expired) == (False, "expired")
@@ -239,8 +243,12 @@ def test_manifest_timestamps_normalize_to_z_and_verify():
     key = generate_key()
     # A non-UTC, sub-second timestamp must serialize to canonical UTC 'Z' form
     # and still verify — signatures are computed over the normalized wire bytes.
-    aware = datetime(2020, 1, 1, 12, 30, 15, 500_000, tzinfo=timezone(timedelta(hours=2)))
-    m = _manifest(key, issued_at=aware, expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+    aware = datetime(
+        2020, 1, 1, 12, 30, 15, 500_000, tzinfo=timezone(timedelta(hours=2))
+    )
+    m = _manifest(
+        key, issued_at=aware, expires_at=datetime.now(UTC) + timedelta(days=1)
+    )
     assert verify_manifest(m)
     wire = m.model_dump(mode="json")
     assert wire["issued_at"] == "2020-01-01T10:30:15Z"
@@ -257,11 +265,14 @@ def test_introduce_response_accepted_until_round_trips_as_aware_datetime():
     assert wire["accepted_until"] == "2026-07-08T08:00:00Z"
     assert wire["known_peer_count"] == 14
     rt = IntroduceResponse.model_validate(wire)
-    assert rt.accepted_until == datetime(2026, 7, 8, 8, 0, 0, tzinfo=timezone.utc)
+    assert rt.accepted_until == datetime(2026, 7, 8, 8, 0, 0, tzinfo=UTC)
     assert rt.known_peer_count == 14
 
     # None stays None on the wire (no spurious empty string).
-    assert IntroduceResponse(accepted=True).model_dump(mode="json")["accepted_until"] is None
+    assert (
+        IntroduceResponse(accepted=True).model_dump(mode="json")["accepted_until"]
+        is None
+    )
 
 
 def test_manifest_domain_proof_admission_evidence_round_trips_as_typed_model():
@@ -279,7 +290,9 @@ def test_manifest_domain_proof_admission_evidence_round_trips_as_typed_model():
         "type": "domain_proof",
         "domain": "org-a.example",
     }
-    assert isinstance(Manifest.model_validate(wire).admission_evidence, DomainProofEvidence)
+    assert isinstance(
+        Manifest.model_validate(wire).admission_evidence, DomainProofEvidence
+    )
 
 
 def test_manifest_unknown_admission_evidence_keeps_tagged_shape():
@@ -299,7 +312,7 @@ def test_manifest_unknown_admission_evidence_keeps_tagged_shape():
 
 async def test_admission_policy_accepts_valid_manifest():
     key = generate_key()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     manifest = _manifest(
         key,
         federations=["supplier-network-prod"],
@@ -322,16 +335,19 @@ async def test_admission_policy_accepts_valid_manifest():
     assert decision.reason == "ok"
 
 
-@pytest.mark.parametrize("extra,reason", [
-    ({"federations": ["other"]}, "wrong_federation"),
-    ({"protocol_versions": ["unknown/1"]}, "unsupported_protocol"),
-    ({"auth_methods": ["mtls"]}, "signed_http_required"),
-    ({"endpoint": "http://dir.org-a.example/federation/v1"}, "https_required"),
-    ({"endpoint": "https://127.0.0.1/federation/v1"}, "private_endpoint_denied"),
-])
+@pytest.mark.parametrize(
+    "extra,reason",
+    [
+        ({"federations": ["other"]}, "wrong_federation"),
+        ({"protocol_versions": ["unknown/1"]}, "unsupported_protocol"),
+        ({"auth_methods": ["mtls"]}, "signed_http_required"),
+        ({"endpoint": "http://dir.org-a.example/federation/v1"}, "https_required"),
+        ({"endpoint": "https://127.0.0.1/federation/v1"}, "private_endpoint_denied"),
+    ],
+)
 async def test_admission_policy_rejects_bad_claims(extra, reason):
     key = generate_key()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     claims = {
         "federations": ["supplier-network-prod"],
         "protocol_versions": ["agent-directory-federation/1"],
@@ -473,7 +489,9 @@ def test_verify_response_signature_accepts_peer_signed_response():
     )
 
     assert verify_response_signature(peer, signed)
-    assert not verify_response_signature(peer, signed.model_copy(update={"signature": None}))
+    assert not verify_response_signature(
+        peer, signed.model_copy(update={"signature": None})
+    )
 
 
 def test_revocation_notice_round_trips_and_verifies():
@@ -483,8 +501,8 @@ def test_revocation_notice_round_trips_and_verifies():
             federation_id="f",
             revoked_node_id="dir:org-b:prod",
             reason="removed",
-            issued_at=datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc),
-            expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc),
+            issued_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
+            expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=UTC),
             issuer="dir:org-a:prod",
         ),
         key,
@@ -494,7 +512,9 @@ def test_revocation_notice_round_trips_and_verifies():
     wire = notice.model_dump(mode="json")
     assert wire["issued_at"] == "2026-07-09T10:00:00Z"
     assert wire["expires_at"] == "2026-07-10T10:00:00Z"
-    assert verify_revocation_notice(RevocationNotice.model_validate(wire), public_jwk(key))
+    assert verify_revocation_notice(
+        RevocationNotice.model_validate(wire), public_jwk(key)
+    )
     assert RevocationsResponse(source_node_id="dir:org-a:prod", notices=[notice])
 
 
@@ -508,8 +528,8 @@ def test_capability_summary_round_trips_and_verifies():
             domains=["manufacturing"],
             skills_top=["cnc"],
             coverage_text="Supplier catalogue",
-            updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc),
-            expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
+            expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=UTC),
         ),
         key,
         "k1",
@@ -523,9 +543,11 @@ def test_capability_summary_round_trips_and_verifies():
 
 
 def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
-    limiter: RateLimiter = TokenBucketRateLimiter({
-        "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
-    })
+    limiter: RateLimiter = TokenBucketRateLimiter(
+        {
+            "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
+        }
+    )
 
     assert limiter.allow("dir:org-a:prod", now=0.0)
     assert limiter.allow("dir:org-a:prod", now=0.0)
@@ -533,9 +555,11 @@ def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
 
 
 def test_token_bucket_rate_limiter_refills_over_time():
-    limiter = TokenBucketRateLimiter({
-        "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
-    })
+    limiter = TokenBucketRateLimiter(
+        {
+            "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
+        }
+    )
 
     assert limiter.allow("dir:org-a:prod", now=0.0)
     assert limiter.allow("dir:org-a:prod", now=0.0)
@@ -545,9 +569,11 @@ def test_token_bucket_rate_limiter_refills_over_time():
 
 
 def test_token_bucket_rate_limiter_treats_missing_limit_as_unbounded():
-    limiter = TokenBucketRateLimiter({
-        "dir:org-a:prod": ManifestLimits(),
-    })
+    limiter = TokenBucketRateLimiter(
+        {
+            "dir:org-a:prod": ManifestLimits(),
+        }
+    )
 
     assert limiter.allow("unknown", now=0.0)
     assert limiter.allow("dir:org-a:prod", now=0.0)
@@ -558,8 +584,14 @@ async def test_signed_request_roundtrip_and_replay(cache):
     key = generate_key()
     jwk = public_jwk(key)
     env = build_signed_request(
-        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
-        method="POST", path="/query", body=b'{"x":1}',
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id="a",
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
     )
     first = await verify_signed_request(
         env,
@@ -588,8 +620,14 @@ async def test_signed_request_body_size_limit_passes_under_limit(cache):
     key = generate_key()
     body = b'{"x":1}'
     env = build_signed_request(
-        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
-        method="POST", path="/query", body=body,
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id="a",
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=body,
     )
 
     assert check_body_size(body, len(body))
@@ -609,8 +647,14 @@ async def test_signed_request_body_size_limit_rejects_without_burning_nonce(cach
     key = generate_key()
     body = b'{"payload":"too-large"}'
     env = build_signed_request(
-        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
-        method="POST", path="/query", body=body,
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id="a",
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=body,
     )
 
     assert not check_body_size(body, len(body) - 1)
@@ -664,12 +708,14 @@ async def test_replay_cache_key_is_scoped_to_request_context():
     )
 
     assert result == (True, "ok")
-    assert cache.calls == [(
-        f"federlet:nonce:supplier-network-prod:dir:org-a:prod:dir:org-b:prod:{env.nonce}",
-        1,
-        120,
-        False,
-    )]
+    assert cache.calls == [
+        (
+            f"federlet:nonce:supplier-network-prod:dir:org-a:prod:dir:org-b:prod:{env.nonce}",
+            1,
+            120,
+            False,
+        )
+    ]
 
 
 async def test_bad_signature_does_not_burn_the_nonce(cache):
@@ -677,8 +723,14 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
     # later use: the claim happens only after the signature verifies.
     key, attacker = generate_key(), generate_key()
     env = build_signed_request(
-        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
-        method="POST", path="/query", body=b'{"x":1}',
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id="a",
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
     )
     forged = env.model_copy(update={"nonce": env.nonce})  # same nonce, wrong key below
     bad = await verify_signed_request(
@@ -704,17 +756,53 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
     assert ok == (True, "ok")
 
 
-@pytest.mark.parametrize("kwargs,reason", [
-    ({"self_node_id": "b", "method": "POST", "path": "/query", "body": b"{}"}, "body_mismatch"),
-    ({"self_node_id": "wrong", "method": "POST", "path": "/query", "body": b'{"x":1}'}, "wrong_target"),
-    ({"self_node_id": "b", "method": "GET", "path": "/query", "body": b'{"x":1}'}, "method_mismatch"),
-    ({"self_node_id": "b", "method": "POST", "path": "/other", "body": b'{"x":1}'}, "path_mismatch"),
-])
+@pytest.mark.parametrize(
+    "kwargs,reason",
+    [
+        (
+            {"self_node_id": "b", "method": "POST", "path": "/query", "body": b"{}"},
+            "body_mismatch",
+        ),
+        (
+            {
+                "self_node_id": "wrong",
+                "method": "POST",
+                "path": "/query",
+                "body": b'{"x":1}',
+            },
+            "wrong_target",
+        ),
+        (
+            {
+                "self_node_id": "b",
+                "method": "GET",
+                "path": "/query",
+                "body": b'{"x":1}',
+            },
+            "method_mismatch",
+        ),
+        (
+            {
+                "self_node_id": "b",
+                "method": "POST",
+                "path": "/other",
+                "body": b'{"x":1}',
+            },
+            "path_mismatch",
+        ),
+    ],
+)
 async def test_signed_request_rejections(kwargs, reason):
     key = generate_key()
     env = build_signed_request(
-        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
-        method="POST", path="/query", body=b'{"x":1}',
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id="a",
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
     )
     ok, why = await verify_signed_request(env, public_jwk(key), **kwargs)
     assert not ok and why == reason
@@ -723,8 +811,14 @@ async def test_signed_request_rejections(kwargs, reason):
 async def test_method_path_mismatch_does_not_burn_nonce(cache):
     key = generate_key()
     env = build_signed_request(
-        key, "k1", federation_id="f", source_node_id="a", target_node_id="b",
-        method="POST", path="/query", body=b'{"x":1}',
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id="a",
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=b'{"x":1}',
     )
 
     bad = await verify_signed_request(
@@ -782,7 +876,9 @@ async def test_members_accepts_signed_response():
     signed = sign_model(MembersResponse(source_node_id=peer.node_id), peer_key, "k1")
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=signed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -814,7 +910,7 @@ async def test_get_revocations_accepts_signed_response():
             federation_id="f",
             revoked_node_id="dir:org-b:prod",
             reason="removed",
-            issued_at=datetime.now(timezone.utc),
+            issued_at=datetime.now(UTC),
             issuer=peer.node_id,
         ),
         peer_key,
@@ -829,7 +925,9 @@ async def test_get_revocations_accepts_signed_response():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/r"
         assert request.url.params["since"] == "cursor-1"
-        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=signed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -844,14 +942,17 @@ async def test_get_revocations_accepts_signed_response():
         await client.close()
 
 
-@pytest.mark.parametrize("response_factory", [
-    lambda peer, _: RevocationsResponse(source_node_id=peer.node_id),
-    lambda peer, bad_key: sign_model(
-        RevocationsResponse(source_node_id=peer.node_id),
-        bad_key,
-        "k1",
-    ),
-])
+@pytest.mark.parametrize(
+    "response_factory",
+    [
+        lambda peer, _: RevocationsResponse(source_node_id=peer.node_id),
+        lambda peer, bad_key: sign_model(
+            RevocationsResponse(source_node_id=peer.node_id),
+            bad_key,
+            "k1",
+        ),
+    ],
+)
 async def test_get_revocations_rejects_unsigned_or_bad_response(response_factory):
     import httpx
 
@@ -867,7 +968,9 @@ async def test_get_revocations_rejects_unsigned_or_bad_response(response_factory
     response = response_factory(peer, generate_key())
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=response.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -899,7 +1002,9 @@ async def test_get_revocations_requires_advertised_endpoint():
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     try:
-        with pytest.raises(MissingRevocationsEndpointError, match="missing_revocations_url"):
+        with pytest.raises(
+            MissingRevocationsEndpointError, match="missing_revocations_url"
+        ):
             await client.get_revocations(peer)
     finally:
         await client.close()
@@ -918,8 +1023,8 @@ async def test_get_capability_summary_accepts_signed_response():
             domains=["manufacturing"],
             skills_top=["cnc"],
             coverage_text="Supplier catalogue",
-            updated_at=datetime.now(timezone.utc),
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            updated_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
         peer_key,
         "k1",
@@ -927,7 +1032,9 @@ async def test_get_capability_summary_accepts_signed_response():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/capability"
-        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=signed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -942,27 +1049,32 @@ async def test_get_capability_summary_accepts_signed_response():
         await client.close()
 
 
-@pytest.mark.parametrize("response_factory", [
-    lambda peer, _: CapabilitySummary(
-        node_id=peer.node_id,
-        summary_version=1,
-        coverage_text="Supplier catalogue",
-        updated_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-    ),
-    lambda peer, bad_key: sign_model(
-        CapabilitySummary(
+@pytest.mark.parametrize(
+    "response_factory",
+    [
+        lambda peer, _: CapabilitySummary(
             node_id=peer.node_id,
             summary_version=1,
             coverage_text="Supplier catalogue",
-            updated_at=datetime.now(timezone.utc),
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            updated_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
-        bad_key,
-        "k1",
-    ),
-])
-async def test_get_capability_summary_rejects_unsigned_or_bad_response(response_factory):
+        lambda peer, bad_key: sign_model(
+            CapabilitySummary(
+                node_id=peer.node_id,
+                summary_version=1,
+                coverage_text="Supplier catalogue",
+                updated_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+            bad_key,
+            "k1",
+        ),
+    ],
+)
+async def test_get_capability_summary_rejects_unsigned_or_bad_response(
+    response_factory,
+):
     import httpx
 
     peer_key = generate_key()
@@ -970,7 +1082,9 @@ async def test_get_capability_summary_rejects_unsigned_or_bad_response(response_
     response = response_factory(peer, generate_key())
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=response.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=response.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1110,10 +1224,13 @@ async def test_probe_peer_health_classifies_success():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/protocol"):
-            return httpx.Response(200, json={
-                "node_id": peer.node_id,
-                "protocol_versions": ["agent-directory-federation/1"],
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "node_id": peer.node_id,
+                    "protocol_versions": ["agent-directory-federation/1"],
+                },
+            )
         if request.url.path.endswith("/health"):
             return httpx.Response(200, json={"node_id": peer.node_id, "status": "ok"})
         return httpx.Response(404, json={"error": "not_found"})
@@ -1175,7 +1292,9 @@ async def test_probe_peer_health_classifies_health_failure():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/protocol"):
-            return httpx.Response(200, json={"protocol_versions": ["agent-directory-federation/1"]})
+            return httpx.Response(
+                200, json={"protocol_versions": ["agent-directory-federation/1"]}
+            )
         raise httpx.ConnectError("health unreachable")
 
     client = FederationClient(
@@ -1205,7 +1324,9 @@ async def test_probe_peer_health_classifies_unhealthy_status():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/protocol"):
-            return httpx.Response(200, json={"protocol_versions": ["agent-directory-federation/1"]})
+            return httpx.Response(
+                200, json={"protocol_versions": ["agent-directory-federation/1"]}
+            )
         return httpx.Response(200, json={"node_id": peer.node_id, "status": "degraded"})
 
     client = FederationClient(
@@ -1241,7 +1362,9 @@ async def test_introduce_rejects_bad_signature_response():
     )
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=signed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=signed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1256,7 +1379,7 @@ async def test_introduce_rejects_bad_signature_response():
             manifest_url="https://caller.example/.well-known/agent-directory.json",
             manifest=peer,
             nonce="n",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
         with pytest.raises(ResponseSignatureError):
             await client.introduce(peer, intro)
@@ -1287,10 +1410,13 @@ async def test_fetch_manifest_verifies_signature():
         await client.close()
 
 
-@pytest.mark.parametrize("manifest_update,reason", [
-    ({"signature": None}, "unsigned"),
-    ({"revision": 999}, "bad_signature"),
-])
+@pytest.mark.parametrize(
+    "manifest_update,reason",
+    [
+        ({"signature": None}, "unsigned"),
+        ({"revision": 999}, "bad_signature"),
+    ],
+)
 async def test_fetch_manifest_rejects_unverified_manifest(manifest_update, reason):
     import httpx
 
@@ -1322,7 +1448,9 @@ async def test_refresh_peer_manifest_returns_unchanged_for_same_revision():
     current = _manifest(peer_key, revision=12)
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=current.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=current.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1357,7 +1485,9 @@ async def test_refresh_peer_manifest_accepts_revision_bump():
     refreshed = _manifest(peer_key, revision=13)
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=refreshed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1389,7 +1519,7 @@ async def test_refresh_peer_manifest_quarantines_expired_manifest():
     import httpx
 
     peer_key = generate_key()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     current = _manifest(peer_key, revision=12)
     expired = _manifest(
         peer_key,
@@ -1399,7 +1529,9 @@ async def test_refresh_peer_manifest_quarantines_expired_manifest():
     )
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=expired.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=expired.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1441,7 +1573,9 @@ async def test_refresh_peer_manifest_accepts_old_key_signed_rotation():
     )
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=refreshed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1474,7 +1608,9 @@ async def test_refresh_peer_manifest_quarantines_unauthorized_rotation():
     refreshed = _manifest(new_key, key_id="org-a-k2", revision=13)
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=refreshed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1508,7 +1644,9 @@ async def test_refresh_peer_manifest_rejects_rotation_when_policy_denies():
     refreshed = _manifest(new_key, key_id="org-a-k2", revision=13)
 
     async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=refreshed.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=refreshed.model_dump(mode="json", exclude_none=True)
+        )
 
     client = FederationClient(
         node_id="caller",
@@ -1572,13 +1710,19 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/seed/members":
-            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=members.model_dump(mode="json", exclude_none=True)
+            )
         if request.url.path == "/new.json":
-            return httpx.Response(200, json=discovered.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=discovered.model_dump(mode="json", exclude_none=True)
+            )
         return httpx.Response(404, json={"error": "not_found"})
 
     table = MembershipTable()
-    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    table.admit(
+        MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+    )
     client = FederationClient(
         node_id="caller",
         federation_id="f",
@@ -1644,14 +1788,18 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/seed/members":
-            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=members.model_dump(mode="json", exclude_none=True)
+            )
         return httpx.Response(
             200,
             json=rejected_manifest.model_dump(mode="json", exclude_none=True),
         )
 
     table = MembershipTable()
-    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    table.admit(
+        MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+    )
     client = FederationClient(
         node_id="caller",
         federation_id="f",
@@ -1701,9 +1849,17 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
             source_node_id=seed.node_id,
             members=[
                 MemberRef(node_id="caller", manifest_url="http://127.0.0.1/self.json"),
-                MemberRef(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"),
-                MemberRef(node_id=duplicate_manifest.node_id, manifest_url="http://127.0.0.1/dup.json"),
-                MemberRef(node_id=duplicate_manifest.node_id, manifest_url="http://127.0.0.1/dup.json"),
+                MemberRef(
+                    node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
+                ),
+                MemberRef(
+                    node_id=duplicate_manifest.node_id,
+                    manifest_url="http://127.0.0.1/dup.json",
+                ),
+                MemberRef(
+                    node_id=duplicate_manifest.node_id,
+                    manifest_url="http://127.0.0.1/dup.json",
+                ),
             ],
         ),
         seed_key,
@@ -1712,7 +1868,9 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/seed/members":
-            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=members.model_dump(mode="json", exclude_none=True)
+            )
         if request.url.path == "/dup.json":
             return httpx.Response(
                 200,
@@ -1721,7 +1879,9 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
         raise AssertionError(f"unexpected fetch: {request.url}")
 
     table = MembershipTable()
-    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    table.admit(
+        MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+    )
     client = FederationClient(
         node_id="caller",
         federation_id="f",
@@ -1771,7 +1931,9 @@ async def test_refresh_discovered_members_enforces_per_peer_cap():
         MembersResponse(
             source_node_id=seed.node_id,
             members=[
-                MemberRef(node_id=m.node_id, manifest_url=f"http://127.0.0.1/new-{i}.json")
+                MemberRef(
+                    node_id=m.node_id, manifest_url=f"http://127.0.0.1/new-{i}.json"
+                )
                 for i, m in enumerate(manifests)
             ],
         ),
@@ -1782,13 +1944,19 @@ async def test_refresh_discovered_members_enforces_per_peer_cap():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/seed/members":
-            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=members.model_dump(mode="json", exclude_none=True)
+            )
         fetched.append(request.url.path)
         index = int(request.url.path.removeprefix("/new-").removesuffix(".json"))
-        return httpx.Response(200, json=manifests[index].model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=manifests[index].model_dump(mode="json", exclude_none=True)
+        )
 
     table = MembershipTable()
-    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    table.admit(
+        MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+    )
     client = FederationClient(
         node_id="caller",
         federation_id="f",
@@ -1845,10 +2013,16 @@ async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/members"
-        return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200, json=members.model_dump(mode="json", exclude_none=True)
+        )
 
     table = MembershipTable()
-    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="https://seed.example/manifest.json"))
+    table.admit(
+        MemberRecord(
+            node_id=seed.node_id, manifest_url="https://seed.example/manifest.json"
+        )
+    )
     client = FederationClient(
         node_id="caller",
         federation_id="f",
@@ -1903,11 +2077,17 @@ async def test_refresh_discovered_members_skips_node_id_mismatch():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/seed/members":
-            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
-        return httpx.Response(200, json=other.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=members.model_dump(mode="json", exclude_none=True)
+            )
+        return httpx.Response(
+            200, json=other.model_dump(mode="json", exclude_none=True)
+        )
 
     table = MembershipTable()
-    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    table.admit(
+        MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+    )
     client = FederationClient(
         node_id="caller",
         federation_id="f",
@@ -1947,16 +2127,24 @@ async def test_refresh_discovered_members_isolates_fetch_failures():
         ),
     )
     refs = [
-        MemberRef(node_id="dir:timeout:prod", manifest_url="http://127.0.0.1/timeout.json"),
+        MemberRef(
+            node_id="dir:timeout:prod", manifest_url="http://127.0.0.1/timeout.json"
+        ),
         MemberRef(node_id="dir:http:prod", manifest_url="http://127.0.0.1/http.json"),
-        MemberRef(node_id="dir:bad-json:prod", manifest_url="http://127.0.0.1/bad-json.json"),
+        MemberRef(
+            node_id="dir:bad-json:prod", manifest_url="http://127.0.0.1/bad-json.json"
+        ),
         MemberRef(node_id=good.node_id, manifest_url="http://127.0.0.1/good.json"),
     ]
-    members = sign_model(MembersResponse(source_node_id=seed.node_id, members=refs), seed_key, "seed-k1")
+    members = sign_model(
+        MembersResponse(source_node_id=seed.node_id, members=refs), seed_key, "seed-k1"
+    )
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/seed/members":
-            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=members.model_dump(mode="json", exclude_none=True)
+            )
         if request.url.path == "/timeout.json":
             raise httpx.ReadTimeout("slow peer")
         if request.url.path == "/http.json":
@@ -1964,11 +2152,15 @@ async def test_refresh_discovered_members_isolates_fetch_failures():
         if request.url.path == "/bad-json.json":
             return httpx.Response(200, content=b"not-json")
         if request.url.path == "/good.json":
-            return httpx.Response(200, json=good.model_dump(mode="json", exclude_none=True))
+            return httpx.Response(
+                200, json=good.model_dump(mode="json", exclude_none=True)
+            )
         return httpx.Response(404, json={"error": "not_found"})
 
     table = MembershipTable()
-    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    table.admit(
+        MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+    )
     client = FederationClient(
         node_id="caller",
         federation_id="f",
@@ -2129,7 +2321,7 @@ def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
             federation_id="f",
             revoked_node_id="dir:org-b:prod",
             reason="removed",
-            issued_at=datetime.now(timezone.utc),
+            issued_at=datetime.now(UTC),
             issuer="dir:org-a:prod",
         ),
         issuer_key,
@@ -2156,7 +2348,7 @@ def test_apply_revocation_notice_ignores_untrusted_issuer():
             federation_id="f",
             revoked_node_id="dir:org-b:prod",
             reason="removed",
-            issued_at=datetime.now(timezone.utc),
+            issued_at=datetime.now(UTC),
             issuer="dir:org-a:prod",
         ),
         issuer_key,
@@ -2183,7 +2375,7 @@ def test_apply_revocation_notice_ignores_wrong_federation():
             federation_id="other",
             revoked_node_id="dir:org-b:prod",
             reason="removed",
-            issued_at=datetime.now(timezone.utc),
+            issued_at=datetime.now(UTC),
             issuer="dir:org-a:prod",
         ),
         issuer_key,
@@ -2209,7 +2401,7 @@ def test_apply_revocation_notice_ignores_unknown_peer():
             federation_id="f",
             revoked_node_id="dir:unknown:prod",
             reason="removed",
-            issued_at=datetime.now(timezone.utc),
+            issued_at=datetime.now(UTC),
             issuer="dir:org-a:prod",
         ),
         issuer_key,

@@ -30,9 +30,7 @@ def generate_key() -> Ed25519PrivateKey:
 
 def public_jwk(key: Ed25519PrivateKey | Ed25519PublicKey) -> JWK:
     pub = key.public_key() if isinstance(key, Ed25519PrivateKey) else key
-    raw = pub.public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
+    raw = pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     return {"kty": "OKP", "crv": "Ed25519", "alg": "EdDSA", "x": b64u_encode(raw)}
 
 

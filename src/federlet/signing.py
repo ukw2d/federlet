@@ -72,7 +72,9 @@ def sign_manifest(manifest: Manifest, key: Ed25519PrivateKey, key_id: str) -> Ma
     return sign_model(manifest, key, key_id)
 
 
-def check_manifest(manifest: Manifest, *, max_skew_seconds: int = 300) -> tuple[bool, str]:
+def check_manifest(
+    manifest: Manifest, *, max_skew_seconds: int = 300
+) -> tuple[bool, str]:
     """Verify a manifest's signature AND freshness. Returns (ok, reason).
 
     Freshness (issued_at/expires_at) is checked only when present; an "expired"

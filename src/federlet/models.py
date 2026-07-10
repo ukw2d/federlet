@@ -7,8 +7,8 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
 
-from .crypto import JWK
 from ._time import iso_z
+from .crypto import JWK
 
 
 class Signature(BaseModel):
