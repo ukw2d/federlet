@@ -25,7 +25,7 @@ from federlet import (
     MemberRef,
     MembersResponse,
 )
-from federlet.lowlevel import SignedRequest, generate_key, sign_model
+from federlet.lowlevel import SignedRequest, generate_key
 from federlet.prelude import (
     SIGNATURE_HEADER,
     FederationClient,
@@ -33,6 +33,8 @@ from federlet.prelude import (
     UnauthorizedPeerRequest,
     build_signed_manifest,
     check_manifest,
+    sign_introduce_response,
+    sign_members_response,
     verify_peer_request,
 )
 
@@ -111,7 +113,7 @@ class ExampleNode:
             )
             for peer in self.trusted_peers.values()
         ]
-        response = sign_model(
+        response = sign_members_response(
             MembersResponse(source_node_id=self.node_id, members=refs),
             self.key,
             self.key_id,
@@ -175,7 +177,7 @@ class ExampleNode:
         except UnauthorizedPeerRequest as exc:
             return 401, {"accepted": False, "reason": exc.reason}
         self.trust(intro.manifest)
-        response = sign_model(
+        response = sign_introduce_response(
             IntroduceResponse(
                 accepted=True,
                 accepted_node_id=intro.manifest.node_id,

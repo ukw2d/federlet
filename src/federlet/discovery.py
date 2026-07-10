@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from json import JSONDecodeError
 
 import httpx
@@ -34,6 +34,22 @@ class DiscoveryRefreshReport:
     failed: list[DiscoveryOutcome]
 
 
+@dataclass
+class _DiscoveryAccumulator:
+    accepted: list[DiscoveryOutcome] = field(default_factory=list)
+    rejected: list[DiscoveryOutcome] = field(default_factory=list)
+    skipped: list[DiscoveryOutcome] = field(default_factory=list)
+    failed: list[DiscoveryOutcome] = field(default_factory=list)
+
+    def to_report(self) -> DiscoveryRefreshReport:
+        return DiscoveryRefreshReport(
+            accepted=self.accepted,
+            rejected=self.rejected,
+            skipped=self.skipped,
+            failed=self.failed,
+        )
+
+
 async def refresh_discovered_members(
     client: FederationClient,
     table: MembershipStore,
@@ -50,23 +66,20 @@ async def refresh_discovered_members(
     fetched and admitted against the caller's local policy before the table is
     updated.
     """
-    accepted: list[DiscoveryOutcome] = []
-    rejected: list[DiscoveryOutcome] = []
-    skipped: list[DiscoveryOutcome] = []
-    failed: list[DiscoveryOutcome] = []
+    outcomes = _DiscoveryAccumulator()
     seen_node_ids: set[str] = set()
     seen_manifest_urls: set[str] = set()
 
     for rec in table.eligible_peers():
         peer_manifest = peer_manifests.get(rec.node_id)
         if peer_manifest is None:
-            failed.append(_outcome_from_record(rec, "missing_peer_manifest"))
+            outcomes.failed.append(_outcome_from_record(rec, "missing_peer_manifest"))
             continue
 
         try:
             members = await client.get_members(peer_manifest, since=since)
         except Exception as exc:
-            failed.append(_outcome_from_record(rec, _failure_reason(exc)))
+            outcomes.failed.append(_outcome_from_record(rec, _failure_reason(exc)))
             continue
 
         for index, ref in enumerate(members.members):
@@ -76,16 +89,16 @@ async def refresh_discovered_members(
                 source_node_id=peer_manifest.node_id,
             )
             if index >= per_peer_cap:
-                skipped.append(_with_reason(outcome, "per_peer_cap"))
+                outcomes.skipped.append(_with_reason(outcome, "per_peer_cap"))
                 continue
             if ref.node_id == client.node_id:
-                skipped.append(_with_reason(outcome, "self"))
+                outcomes.skipped.append(_with_reason(outcome, "self"))
                 continue
             if table.get(ref.node_id) is not None:
-                skipped.append(_with_reason(outcome, "existing_peer"))
+                outcomes.skipped.append(_with_reason(outcome, "existing_peer"))
                 continue
             if ref.node_id in seen_node_ids or ref.manifest_url in seen_manifest_urls:
-                skipped.append(_with_reason(outcome, "duplicate"))
+                outcomes.skipped.append(_with_reason(outcome, "duplicate"))
                 continue
 
             seen_node_ids.add(ref.node_id)
@@ -97,18 +110,10 @@ async def refresh_discovered_members(
                 ref,
                 peer_manifest.node_id,
                 max_skew_seconds,
-                accepted,
-                rejected,
-                skipped,
-                failed,
+                outcomes,
             )
 
-    return DiscoveryRefreshReport(
-        accepted=accepted,
-        rejected=rejected,
-        skipped=skipped,
-        failed=failed,
-    )
+    return outcomes.to_report()
 
 
 async def _process_ref(
@@ -118,10 +123,7 @@ async def _process_ref(
     ref: MemberRef,
     source_node_id: str,
     max_skew_seconds: int,
-    accepted: list[DiscoveryOutcome],
-    rejected: list[DiscoveryOutcome],
-    skipped: list[DiscoveryOutcome],
-    failed: list[DiscoveryOutcome],
+    outcomes: _DiscoveryAccumulator,
 ) -> None:
     base = DiscoveryOutcome(ref.node_id, ref.manifest_url, source_node_id)
     try:
@@ -130,14 +132,14 @@ async def _process_ref(
             max_skew_seconds=max_skew_seconds,
         )
     except Exception as exc:
-        failed.append(_with_reason(base, _failure_reason(exc)))
+        outcomes.failed.append(_with_reason(base, _failure_reason(exc)))
         return
 
     if manifest.node_id != ref.node_id:
-        skipped.append(_with_manifest(base, "node_id_mismatch", manifest))
+        outcomes.skipped.append(_with_manifest(base, "node_id_mismatch", manifest))
         return
     if manifest.node_id == client.node_id:
-        skipped.append(_with_manifest(base, "self", manifest))
+        outcomes.skipped.append(_with_manifest(base, "self", manifest))
         return
 
     decision = await admit_manifest(
@@ -146,7 +148,7 @@ async def _process_ref(
         max_skew_seconds=max_skew_seconds,
     )
     if not decision.accepted:
-        rejected.append(_with_manifest(base, decision.reason, manifest))
+        outcomes.rejected.append(_with_manifest(base, decision.reason, manifest))
         return
 
     table.admit(
@@ -157,7 +159,7 @@ async def _process_ref(
             manifest_revision=manifest.revision,
         )
     )
-    accepted.append(_with_manifest(base, "ok", manifest))
+    outcomes.accepted.append(_with_manifest(base, "ok", manifest))
 
 
 def _outcome_from_record(rec: MemberRecord, reason: str) -> DiscoveryOutcome:

@@ -73,9 +73,13 @@ from federlet import (
     refresh_peer_manifest,
     sha256_hex,
     sign_capability_summary,
+    sign_introduce_response,
     sign_manifest,
+    sign_members_response,
     sign_model,
+    sign_query_response,
     sign_result_card,
+    sign_revocations_response,
     verify_manifest,
     verify_model,
     verify_peer_request,
@@ -654,7 +658,7 @@ def test_query_response_round_trips_signed_cards_and_response_signature():
         key,
         "k1",
     )
-    resp = sign_model(
+    resp = sign_query_response(
         QueryResponse(
             query_id="q-123",
             source_node_id=peer.node_id,
@@ -669,6 +673,44 @@ def test_query_response_round_trips_signed_cards_and_response_signature():
     assert rt.coverage.searched_local_catalogue
     assert verify_response_signature(peer, rt)
     assert verify_result_card(peer, rt.results[0])
+
+
+def test_standard_response_signing_helpers_are_verifiable():
+    key = generate_key()
+    peer = _manifest(key)
+
+    assert verify_response_signature(
+        peer,
+        sign_introduce_response(
+            IntroduceResponse(accepted=True, accepted_node_id=peer.node_id),
+            key,
+            "k1",
+        ),
+    )
+    assert verify_response_signature(
+        peer,
+        sign_members_response(
+            MembersResponse(source_node_id=peer.node_id),
+            key,
+            "k1",
+        ),
+    )
+    assert verify_response_signature(
+        peer,
+        sign_revocations_response(
+            RevocationsResponse(source_node_id=peer.node_id),
+            key,
+            "k1",
+        ),
+    )
+    assert verify_response_signature(
+        peer,
+        sign_query_response(
+            QueryResponse(query_id="q-123", source_node_id=peer.node_id),
+            key,
+            "k1",
+        ),
+    )
 
 
 def test_revocation_notice_round_trips_and_verifies():
@@ -2612,6 +2654,7 @@ def test_tiered_public_api_namespaces_are_importable():
     assert prelude.build_signed_manifest is build_signed_manifest
     assert prelude.verify_peer_request is verify_peer_request
     assert prelude.QueryRequest is QueryRequest
+    assert prelude.sign_members_response is sign_members_response
     assert prelude.sign_result_card is sign_result_card
     assert prelude.sign_capability_summary is sign_capability_summary
 

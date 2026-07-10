@@ -21,6 +21,12 @@ from .query import (
     sign_result_card,
     verify_result_card,
 )
+from .responses import (
+    sign_introduce_response,
+    sign_members_response,
+    sign_query_response,
+    sign_revocations_response,
+)
 from .signing import (
     UnauthorizedPeerRequest,
     VerifiedPeer,
@@ -49,7 +55,11 @@ __all__ = [
     "build_signed_manifest",
     "check_manifest",
     "sign_capability_summary",
+    "sign_introduce_response",
     "sign_manifest",
+    "sign_members_response",
+    "sign_query_response",
+    "sign_revocations_response",
     "sign_result_card",
     "verify_peer_request",
     "verify_result_card",

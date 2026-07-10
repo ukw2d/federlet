@@ -92,6 +92,12 @@ from .query import (
     verify_result_card,
 )
 from .refresh import ManifestRefreshDecision, refresh_peer_manifest
+from .responses import (
+    sign_introduce_response,
+    sign_members_response,
+    sign_query_response,
+    sign_revocations_response,
+)
 from .signing import (
     UnauthorizedPeerRequest,
     VerifiedPeer,
@@ -186,6 +192,10 @@ __all__ = [
     "verify_result_card",
     "ManifestRefreshDecision",
     "refresh_peer_manifest",
+    "sign_introduce_response",
+    "sign_members_response",
+    "sign_query_response",
+    "sign_revocations_response",
     "build_signed_request",
     "check_body_size",
     "check_manifest",
