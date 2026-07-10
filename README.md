@@ -1,5 +1,7 @@
 # federlet
 
+[![CI](https://github.com/ukw2d/pimx/actions/workflows/ci.yml/badge.svg)](https://github.com/ukw2d/pimx/actions/workflows/ci.yml)
+
 Federlet: a small async Python library for
 hubless HTTPS federation between directory nodes.
 
