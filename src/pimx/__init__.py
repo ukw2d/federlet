@@ -31,6 +31,11 @@ from .crypto import (
     public_jwk,
     public_key_from_jwk,
 )
+from .discovery import (
+    DiscoveryOutcome,
+    DiscoveryRefreshReport,
+    refresh_discovered_members,
+)
 from .health import PeerHealthProbeResult, probe_peer_health
 from .membership import (
     DisclosurePolicy,
@@ -109,6 +114,9 @@ __all__ = [
     "generate_key",
     "public_jwk",
     "public_key_from_jwk",
+    "DiscoveryOutcome",
+    "DiscoveryRefreshReport",
+    "refresh_discovered_members",
     "PeerHealthProbeResult",
     "probe_peer_health",
     "DisclosurePolicy",

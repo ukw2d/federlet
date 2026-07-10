@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from pimx import (
     AdmissionEvidence,
     CapabilitySummary,
+    DiscoveryRefreshReport,
     JWK,
     Disclosure,
     DomainProofEvidence,
@@ -23,6 +24,7 @@ from pimx import (
     ManifestLimits,
     ManifestRefreshDecision,
     MemberRecord,
+    MemberRef,
     MembersResponse,
     Membership,
     MembershipStore,
@@ -56,6 +58,7 @@ from pimx import (
     public_jwk,
     public_key_from_jwk,
     probe_peer_health,
+    refresh_discovered_members,
     refresh_peer_manifest,
     sha256_hex,
     sign_model,
@@ -112,6 +115,23 @@ def _manifest(key, key_id="k1", **extra) -> Manifest:
     } | extra
     m = Manifest(**data)
     return sign_manifest(m, key, key_id)
+
+
+def _discovery_policy() -> AdmissionPolicy:
+    return AdmissionPolicy(
+        federation_id="f",
+        protocol_versions={"agent-directory-federation/1"},
+        require_expires_at=False,
+    )
+
+
+def _discoverable_manifest(key, key_id="k1", **extra) -> Manifest:
+    return _manifest(
+        key,
+        key_id,
+        protocol_versions=["agent-directory-federation/1"],
+        **extra,
+    )
 
 
 def test_manifest_sign_verify_and_tamper():
@@ -1512,6 +1532,468 @@ async def test_refresh_peer_manifest_rejects_rotation_when_policy_denies():
     assert decision.reason == "rotation_denied"
     assert decision.key_continuity is not None
     assert decision.key_continuity.action == "reject"
+
+
+async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
+    import httpx
+
+    seed_key, new_key = generate_key(), generate_key()
+    seed = _discoverable_manifest(
+        seed_key,
+        "seed-k1",
+        node_id="dir:seed:prod",
+        org_id="seed",
+        membership=Membership(
+            introduce_url="http://127.0.0.1/seed/i",
+            members_url="http://127.0.0.1/seed/members",
+        ),
+    )
+    discovered = _discoverable_manifest(
+        new_key,
+        "new-k1",
+        node_id="dir:new:prod",
+        org_id="new",
+        endpoint="https://new.example/federation/v1",
+    )
+    members = sign_model(
+        MembersResponse(
+            source_node_id=seed.node_id,
+            members=[
+                MemberRef(
+                    node_id=discovered.node_id,
+                    org_id=discovered.org_id,
+                    manifest_url="http://127.0.0.1/new.json",
+                )
+            ],
+        ),
+        seed_key,
+        "seed-k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/seed/members":
+            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+        if request.url.path == "/new.json":
+            return httpx.Response(200, json=discovered.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(404, json={"error": "not_found"})
+
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await refresh_discovered_members(
+            client,
+            table,
+            {seed.node_id: seed},
+            _discovery_policy(),
+        )
+    finally:
+        await client.close()
+
+    assert isinstance(report, DiscoveryRefreshReport)
+    assert [o.node_id for o in report.accepted] == [discovered.node_id]
+    assert not report.rejected
+    assert not report.skipped
+    assert not report.failed
+    rec = table.get(discovered.node_id)
+    assert rec is not None
+    assert rec.state == PeerState.ACTIVE
+    assert rec.manifest_url == "http://127.0.0.1/new.json"
+    assert rec.manifest_revision == discovered.revision
+
+
+async def test_refresh_discovered_members_rejects_by_local_policy():
+    import httpx
+
+    seed_key, new_key = generate_key(), generate_key()
+    seed = _discoverable_manifest(
+        seed_key,
+        "seed-k1",
+        node_id="dir:seed:prod",
+        membership=Membership(
+            introduce_url="http://127.0.0.1/seed/i",
+            members_url="http://127.0.0.1/seed/members",
+        ),
+    )
+    rejected_manifest = _discoverable_manifest(
+        new_key,
+        "new-k1",
+        node_id="dir:rejected:prod",
+        federations=["other"],
+    )
+    members = sign_model(
+        MembersResponse(
+            source_node_id=seed.node_id,
+            members=[
+                MemberRef(
+                    node_id=rejected_manifest.node_id,
+                    manifest_url="http://127.0.0.1/rejected.json",
+                )
+            ],
+        ),
+        seed_key,
+        "seed-k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/seed/members":
+            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(
+            200,
+            json=rejected_manifest.model_dump(mode="json", exclude_none=True),
+        )
+
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await refresh_discovered_members(
+            client,
+            table,
+            {seed.node_id: seed},
+            _discovery_policy(),
+        )
+    finally:
+        await client.close()
+
+    assert not report.accepted
+    assert [(o.node_id, o.reason) for o in report.rejected] == [
+        (rejected_manifest.node_id, "wrong_federation")
+    ]
+    assert table.get(rejected_manifest.node_id) is None
+
+
+async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hints():
+    import httpx
+
+    seed_key, new_key = generate_key(), generate_key()
+    seed = _discoverable_manifest(
+        seed_key,
+        "seed-k1",
+        node_id="dir:seed:prod",
+        membership=Membership(
+            introduce_url="http://127.0.0.1/seed/i",
+            members_url="http://127.0.0.1/seed/members",
+        ),
+    )
+    duplicate_manifest = _discoverable_manifest(
+        new_key,
+        "dup-k1",
+        node_id="dir:dup:prod",
+        federations=["other"],
+    )
+    members = sign_model(
+        MembersResponse(
+            source_node_id=seed.node_id,
+            members=[
+                MemberRef(node_id="caller", manifest_url="http://127.0.0.1/self.json"),
+                MemberRef(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"),
+                MemberRef(node_id=duplicate_manifest.node_id, manifest_url="http://127.0.0.1/dup.json"),
+                MemberRef(node_id=duplicate_manifest.node_id, manifest_url="http://127.0.0.1/dup.json"),
+            ],
+        ),
+        seed_key,
+        "seed-k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/seed/members":
+            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+        if request.url.path == "/dup.json":
+            return httpx.Response(
+                200,
+                json=duplicate_manifest.model_dump(mode="json", exclude_none=True),
+            )
+        raise AssertionError(f"unexpected fetch: {request.url}")
+
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await refresh_discovered_members(
+            client,
+            table,
+            {seed.node_id: seed},
+            _discovery_policy(),
+        )
+    finally:
+        await client.close()
+
+    assert [(o.node_id, o.reason) for o in report.skipped] == [
+        ("caller", "self"),
+        (seed.node_id, "existing_peer"),
+        (duplicate_manifest.node_id, "duplicate"),
+    ]
+    assert [(o.node_id, o.reason) for o in report.rejected] == [
+        (duplicate_manifest.node_id, "wrong_federation")
+    ]
+
+
+async def test_refresh_discovered_members_enforces_per_peer_cap():
+    import httpx
+
+    seed_key = generate_key()
+    manifests = [
+        _discoverable_manifest(generate_key(), f"k{i}", node_id=f"dir:new-{i}:prod")
+        for i in range(3)
+    ]
+    seed = _discoverable_manifest(
+        seed_key,
+        "seed-k1",
+        node_id="dir:seed:prod",
+        membership=Membership(
+            introduce_url="http://127.0.0.1/seed/i",
+            members_url="http://127.0.0.1/seed/members",
+        ),
+    )
+    members = sign_model(
+        MembersResponse(
+            source_node_id=seed.node_id,
+            members=[
+                MemberRef(node_id=m.node_id, manifest_url=f"http://127.0.0.1/new-{i}.json")
+                for i, m in enumerate(manifests)
+            ],
+        ),
+        seed_key,
+        "seed-k1",
+    )
+    fetched: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/seed/members":
+            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+        fetched.append(request.url.path)
+        index = int(request.url.path.removeprefix("/new-").removesuffix(".json"))
+        return httpx.Response(200, json=manifests[index].model_dump(mode="json", exclude_none=True))
+
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await refresh_discovered_members(
+            client,
+            table,
+            {seed.node_id: seed},
+            _discovery_policy(),
+            per_peer_cap=1,
+        )
+    finally:
+        await client.close()
+
+    assert [o.node_id for o in report.accepted] == [manifests[0].node_id]
+    assert [(o.node_id, o.reason) for o in report.skipped] == [
+        (manifests[1].node_id, "per_peer_cap"),
+        (manifests[2].node_id, "per_peer_cap"),
+    ]
+    assert fetched == ["/new-0.json"]
+
+
+async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
+    import httpx
+
+    seed_key = generate_key()
+    seed = _discoverable_manifest(
+        seed_key,
+        "seed-k1",
+        node_id="dir:seed:prod",
+        membership=Membership(
+            introduce_url="https://seed.example/i",
+            members_url="https://seed.example/members",
+        ),
+    )
+    members = sign_model(
+        MembersResponse(
+            source_node_id=seed.node_id,
+            members=[
+                MemberRef(
+                    node_id="dir:private:prod",
+                    manifest_url="http://127.0.0.1/private.json",
+                )
+            ],
+        ),
+        seed_key,
+        "seed-k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/members"
+        return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="https://seed.example/manifest.json"))
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=False,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await refresh_discovered_members(
+            client,
+            table,
+            {seed.node_id: seed},
+            _discovery_policy(),
+        )
+    finally:
+        await client.close()
+
+    assert not report.accepted
+    assert [(o.node_id, o.reason) for o in report.failed] == [
+        ("dir:private:prod", "ssrf_rejected")
+    ]
+
+
+async def test_refresh_discovered_members_skips_node_id_mismatch():
+    import httpx
+
+    seed_key, other_key = generate_key(), generate_key()
+    seed = _discoverable_manifest(
+        seed_key,
+        "seed-k1",
+        node_id="dir:seed:prod",
+        membership=Membership(
+            introduce_url="http://127.0.0.1/seed/i",
+            members_url="http://127.0.0.1/seed/members",
+        ),
+    )
+    other = _discoverable_manifest(other_key, "other-k1", node_id="dir:other:prod")
+    members = sign_model(
+        MembersResponse(
+            source_node_id=seed.node_id,
+            members=[
+                MemberRef(
+                    node_id="dir:expected:prod",
+                    manifest_url="http://127.0.0.1/mismatch.json",
+                )
+            ],
+        ),
+        seed_key,
+        "seed-k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/seed/members":
+            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(200, json=other.model_dump(mode="json", exclude_none=True))
+
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await refresh_discovered_members(
+            client,
+            table,
+            {seed.node_id: seed},
+            _discovery_policy(),
+        )
+    finally:
+        await client.close()
+
+    assert [(o.node_id, o.reason) for o in report.skipped] == [
+        ("dir:expected:prod", "node_id_mismatch")
+    ]
+    assert table.get("dir:expected:prod") is None
+
+
+async def test_refresh_discovered_members_isolates_fetch_failures():
+    import httpx
+
+    seed_key = generate_key()
+    good = _discoverable_manifest(generate_key(), "good-k1", node_id="dir:good:prod")
+    seed = _discoverable_manifest(
+        seed_key,
+        "seed-k1",
+        node_id="dir:seed:prod",
+        membership=Membership(
+            introduce_url="http://127.0.0.1/seed/i",
+            members_url="http://127.0.0.1/seed/members",
+        ),
+    )
+    refs = [
+        MemberRef(node_id="dir:timeout:prod", manifest_url="http://127.0.0.1/timeout.json"),
+        MemberRef(node_id="dir:http:prod", manifest_url="http://127.0.0.1/http.json"),
+        MemberRef(node_id="dir:bad-json:prod", manifest_url="http://127.0.0.1/bad-json.json"),
+        MemberRef(node_id=good.node_id, manifest_url="http://127.0.0.1/good.json"),
+    ]
+    members = sign_model(MembersResponse(source_node_id=seed.node_id, members=refs), seed_key, "seed-k1")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/seed/members":
+            return httpx.Response(200, json=members.model_dump(mode="json", exclude_none=True))
+        if request.url.path == "/timeout.json":
+            raise httpx.ReadTimeout("slow peer")
+        if request.url.path == "/http.json":
+            return httpx.Response(503, json={"error": "unavailable"})
+        if request.url.path == "/bad-json.json":
+            return httpx.Response(200, content=b"not-json")
+        if request.url.path == "/good.json":
+            return httpx.Response(200, json=good.model_dump(mode="json", exclude_none=True))
+        return httpx.Response(404, json={"error": "not_found"})
+
+    table = MembershipTable()
+    table.admit(MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"))
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await refresh_discovered_members(
+            client,
+            table,
+            {seed.node_id: seed},
+            _discovery_policy(),
+        )
+    finally:
+        await client.close()
+
+    assert [(o.node_id, o.reason) for o in report.failed] == [
+        ("dir:timeout:prod", "timeout"),
+        ("dir:http:prod", "http_error"),
+        ("dir:bad-json:prod", "malformed_manifest"),
+    ]
+    assert [o.node_id for o in report.accepted] == [good.node_id]
+    assert table.get(good.node_id) is not None
 
 
 def test_public_crypto_and_signing_helpers_are_exported():

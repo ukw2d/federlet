@@ -1,0 +1,210 @@
+"""Discovered-peer admission from signed membership hints."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from json import JSONDecodeError
+
+import httpx
+from pydantic import ValidationError
+
+from .admission import AdmissionPolicy, admit_manifest
+from .client import FederationClient, ManifestVerificationError
+from .membership import MemberRecord
+from .models import Manifest, MemberRef
+from .net import SSRFError
+from .protocols import MembershipStore
+
+
+@dataclass(frozen=True)
+class DiscoveryOutcome:
+    node_id: str
+    manifest_url: str
+    source_node_id: str
+    reason: str = "ok"
+    manifest: Manifest | None = None
+
+
+@dataclass(frozen=True)
+class DiscoveryRefreshReport:
+    accepted: list[DiscoveryOutcome]
+    rejected: list[DiscoveryOutcome]
+    skipped: list[DiscoveryOutcome]
+    failed: list[DiscoveryOutcome]
+
+
+async def refresh_discovered_members(
+    client: FederationClient,
+    table: MembershipStore,
+    peer_manifests: Mapping[str, Manifest],
+    policy: AdmissionPolicy,
+    *,
+    max_skew_seconds: int = 300,
+    per_peer_cap: int = 100,
+    since: str | None = None,
+) -> DiscoveryRefreshReport:
+    """Fetch and locally admit newly discovered peers from eligible members.
+
+    Membership responses are only discovery hints. Each discovered manifest is
+    fetched and admitted against the caller's local policy before the table is
+    updated.
+    """
+    accepted: list[DiscoveryOutcome] = []
+    rejected: list[DiscoveryOutcome] = []
+    skipped: list[DiscoveryOutcome] = []
+    failed: list[DiscoveryOutcome] = []
+    seen_node_ids: set[str] = set()
+    seen_manifest_urls: set[str] = set()
+
+    for rec in table.eligible_peers():
+        peer_manifest = peer_manifests.get(rec.node_id)
+        if peer_manifest is None:
+            failed.append(_outcome_from_record(rec, "missing_peer_manifest"))
+            continue
+
+        try:
+            members = await client.get_members(peer_manifest, since=since)
+        except Exception as exc:
+            failed.append(_outcome_from_record(rec, _failure_reason(exc)))
+            continue
+
+        for index, ref in enumerate(members.members):
+            outcome = DiscoveryOutcome(
+                node_id=ref.node_id,
+                manifest_url=ref.manifest_url,
+                source_node_id=peer_manifest.node_id,
+            )
+            if index >= per_peer_cap:
+                skipped.append(_with_reason(outcome, "per_peer_cap"))
+                continue
+            if ref.node_id == client.node_id:
+                skipped.append(_with_reason(outcome, "self"))
+                continue
+            if table.get(ref.node_id) is not None:
+                skipped.append(_with_reason(outcome, "existing_peer"))
+                continue
+            if ref.node_id in seen_node_ids or ref.manifest_url in seen_manifest_urls:
+                skipped.append(_with_reason(outcome, "duplicate"))
+                continue
+
+            seen_node_ids.add(ref.node_id)
+            seen_manifest_urls.add(ref.manifest_url)
+            await _process_ref(
+                client,
+                table,
+                policy,
+                ref,
+                peer_manifest.node_id,
+                max_skew_seconds,
+                accepted,
+                rejected,
+                skipped,
+                failed,
+            )
+
+    return DiscoveryRefreshReport(
+        accepted=accepted,
+        rejected=rejected,
+        skipped=skipped,
+        failed=failed,
+    )
+
+
+async def _process_ref(
+    client: FederationClient,
+    table: MembershipStore,
+    policy: AdmissionPolicy,
+    ref: MemberRef,
+    source_node_id: str,
+    max_skew_seconds: int,
+    accepted: list[DiscoveryOutcome],
+    rejected: list[DiscoveryOutcome],
+    skipped: list[DiscoveryOutcome],
+    failed: list[DiscoveryOutcome],
+) -> None:
+    base = DiscoveryOutcome(ref.node_id, ref.manifest_url, source_node_id)
+    try:
+        manifest = await client.fetch_manifest(
+            ref.manifest_url,
+            max_skew_seconds=max_skew_seconds,
+        )
+    except Exception as exc:
+        failed.append(_with_reason(base, _failure_reason(exc)))
+        return
+
+    if manifest.node_id != ref.node_id:
+        skipped.append(_with_manifest(base, "node_id_mismatch", manifest))
+        return
+    if manifest.node_id == client.node_id:
+        skipped.append(_with_manifest(base, "self", manifest))
+        return
+
+    decision = await admit_manifest(
+        manifest,
+        policy,
+        max_skew_seconds=max_skew_seconds,
+    )
+    if not decision.accepted:
+        rejected.append(_with_manifest(base, decision.reason, manifest))
+        return
+
+    table.admit(
+        MemberRecord(
+            node_id=manifest.node_id,
+            org_id=manifest.org_id,
+            manifest_url=ref.manifest_url,
+            manifest_revision=manifest.revision,
+        )
+    )
+    accepted.append(_with_manifest(base, "ok", manifest))
+
+
+def _outcome_from_record(rec: MemberRecord, reason: str) -> DiscoveryOutcome:
+    return DiscoveryOutcome(
+        node_id=rec.node_id,
+        manifest_url=rec.manifest_url,
+        source_node_id=rec.node_id,
+        reason=reason,
+    )
+
+
+def _with_reason(outcome: DiscoveryOutcome, reason: str) -> DiscoveryOutcome:
+    return DiscoveryOutcome(
+        node_id=outcome.node_id,
+        manifest_url=outcome.manifest_url,
+        source_node_id=outcome.source_node_id,
+        reason=reason,
+    )
+
+
+def _with_manifest(
+    outcome: DiscoveryOutcome,
+    reason: str,
+    manifest: Manifest,
+) -> DiscoveryOutcome:
+    return DiscoveryOutcome(
+        node_id=outcome.node_id,
+        manifest_url=outcome.manifest_url,
+        source_node_id=outcome.source_node_id,
+        reason=reason,
+        manifest=manifest,
+    )
+
+
+def _failure_reason(exc: Exception) -> str:
+    if isinstance(exc, SSRFError):
+        return "ssrf_rejected"
+    if isinstance(exc, ManifestVerificationError):
+        return str(exc) or "bad_manifest"
+    if isinstance(exc, (ValidationError, JSONDecodeError)):
+        return "malformed_manifest"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "http_error"
+    if isinstance(exc, httpx.TransportError):
+        return "transport_error"
+    if isinstance(exc, httpx.HTTPError):
+        return "http_error"
+    return exc.__class__.__name__
