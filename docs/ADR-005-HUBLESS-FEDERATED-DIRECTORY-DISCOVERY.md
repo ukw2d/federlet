@@ -685,6 +685,10 @@ search, lexical search, SQL filters, a document index, or any local mechanism de
       "provenance": {
         "node_id": "dir:org-c:prod",
         "content_hash": "sha256:..."
+      },
+      "signature": {
+        "key_id": "org-c-node-signing-1",
+        "sig": "..."
       }
     }
   ],
@@ -700,8 +704,9 @@ search, lexical search, SQL filters, a document index, or any local mechanism de
 }
 ```
 
-The owning node signs result cards so downstream consumers can retain provenance even after the
-querying node merges results from many peers.
+The owning node signs each result card so downstream consumers can retain provenance even after the
+querying node merges results from many peers. The response envelope may also be signed to authenticate
+the immediate peer response.
 
 ## 13. Fetch Protocol
 

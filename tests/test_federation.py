@@ -8,8 +8,18 @@ from datetime import UTC, datetime
 
 import pytest
 
-from federlet import FederationClient, IntroduceRequest, Manifest
+from federlet import (
+    AdmissionPolicy,
+    FederationClient,
+    IntroduceRequest,
+    Manifest,
+    bootstrap_from_seeds,
+)
+from federlet import (
+    FederationNode as FederationNodeFacade,
+)
 from federlet.crypto import b64u_encode
+from federlet.lowlevel import build_signed_request
 from federlet.signing import sign_dict
 from harness import FederationNode
 
@@ -146,6 +156,114 @@ async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
         await a_client.close()
         await c_client.close()
     finally:
+        org_c.stop()
+
+
+async def test_seed_bootstrap_helper_fetches_admits_and_introduces(org_a, org_b):
+    step("SCENARIO 2b: Org C bootstraps through seed helper")
+    org_a.seed(org_b)
+    org_b.seed(org_a)
+    org_c = FederationNode("dir:org-c:prod", "org-c", FED).start()
+    try:
+        c_client = _client(org_c)
+        report = await bootstrap_from_seeds(
+            c_client,
+            seed_manifest_urls=[org_a.manifest_url, org_b.manifest_url],
+            local_manifest_url=org_c.manifest_url,
+            local_manifest=org_c.manifest,
+            policy=AdmissionPolicy(
+                federation_id=FED,
+                protocol_versions={"agent-directory-federation/1"},
+                require_expires_at=False,
+                require_https=False,
+                allow_private_hosts=True,
+            ),
+        )
+
+        assert not report.failed
+        assert not report.rejected
+        accepted_seed_ids = {
+            o.seed_manifest.node_id for o in report.accepted if o.seed_manifest
+        }
+        assert accepted_seed_ids == {
+            org_a.node_id,
+            org_b.node_id,
+        }
+        assert all(o.response and o.response.accepted for o in report.accepted)
+        assert org_c.node_id in org_a.peers
+        assert org_c.node_id in org_b.peers
+        await c_client.close()
+    finally:
+        org_c.stop()
+
+
+async def test_stateful_facade_drives_bootstrap_discover_refresh_and_verify(
+    org_a,
+    org_b,
+):
+    step("SCENARIO 2c: stateful facade wraps common host workflows")
+    org_a.seed(org_b)
+    org_b.seed(org_a)
+    org_c = FederationNode("dir:org-c:prod", "org-c", FED).start()
+    facade = FederationNodeFacade(
+        node_id=org_c.node_id,
+        federation_id=FED,
+        key=org_c.key,
+        key_id=org_c.key_id,
+        manifest_revision=org_c.manifest.revision,
+        admission_policy=AdmissionPolicy(
+            federation_id=FED,
+            protocol_versions={"agent-directory-federation/1"},
+            require_expires_at=False,
+            require_https=False,
+            allow_private_hosts=True,
+        ),
+        allow_private=True,
+    )
+    try:
+        bootstrap = await facade.bootstrap_from_seeds(
+            seed_manifest_urls=[org_a.manifest_url],
+            local_manifest_url=org_c.manifest_url,
+            local_manifest=org_c.manifest,
+        )
+        accepted_seed_ids = [
+            o.seed_manifest.node_id for o in bootstrap.accepted if o.seed_manifest
+        ]
+        assert accepted_seed_ids == [org_a.node_id]
+        assert facade.select_peers() == [org_a.manifest]
+
+        discovery = await facade.discover()
+        assert [o.node_id for o in discovery.accepted] == [org_b.node_id]
+        assert {m.node_id for m in facade.select_peers()} == {
+            org_a.node_id,
+            org_b.node_id,
+        }
+
+        refresh = await facade.refresh_all()
+        assert {d.action for d in refresh.values()} == {"unchanged"}
+
+        body = b'{"query_id":"q-1"}'
+        envelope = build_signed_request(
+            org_a.key,
+            org_a.key_id,
+            federation_id=FED,
+            source_node_id=org_a.node_id,
+            target_node_id=org_c.node_id,
+            method="POST",
+            path="/federation/v1/query",
+            body=body,
+            source_manifest_revision=org_a.manifest.revision,
+        )
+        verified = await facade.verify_known_inbound(
+            signature_header=envelope.model_dump_json(exclude_none=True),
+            source_node_id=org_a.node_id,
+            method="POST",
+            path="/federation/v1/query",
+            body=body,
+        )
+        assert verified.source_node_id == org_a.node_id
+    finally:
+        await facade.close()
         org_c.stop()
 
 

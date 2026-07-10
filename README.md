@@ -40,6 +40,9 @@ federlet implements the protocol core from ADR-005:
 - local manifest admission policy and key-continuity checks
 - SSRF protection for manifest URLs and admitted endpoints
 - membership, revocation, manifest refresh, and discovery state helpers
+- seed-bootstrap and capability-summary signing helpers
+- optional stateful facade for common host workflows
+- query envelope models and signed lightweight result-card helpers
 - protocol, health, revocation, capability-summary, and membership client calls
 - structural protocols for host-owned nonce caches, rate limiters, and stores
 - typed Pydantic models and `py.typed` packaging
@@ -116,18 +119,19 @@ with replay protection.
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from federlet import (
+from federlet.prelude import (
     AdmissionPolicy,
     Manifest,
     Membership,
     PublicKey,
     admit_manifest,
+    sign_manifest,
+    verify_peer_request,
+)
+from federlet.lowlevel import (
     build_signed_request,
-    find_jwk,
     generate_key,
     public_jwk,
-    sign_manifest,
-    verify_signed_request,
 )
 
 
@@ -214,20 +218,16 @@ async def main() -> None:
         body=body,
         source_manifest_revision=manifest_a.revision,
     )
-    assert envelope.signature is not None
-    jwk = find_jwk(manifest_a.public_keys, envelope.signature.key_id)
-    assert jwk is not None
-
-    ok, reason = await verify_signed_request(
-        envelope,
-        jwk,
+    verified = await verify_peer_request(
+        signature_header=envelope.model_dump_json(exclude_none=True),
+        peer_manifest=manifest_a,
         self_node_id=manifest_b.node_id,
         method="POST",
         path="/federation/v1/example",
         body=body,
         cache=MemoryNonceCache(),
     )
-    assert ok, reason
+    assert verified.source_node_id == manifest_a.node_id
     print("verified")
 
 
@@ -239,6 +239,10 @@ Your HTTP adapter can then use the same verification function for inbound peer
 requests.
 
 ## Host adapter sketch
+
+For a runnable framework-neutral version, see
+[`examples/host.py`](examples/host.py). It uses Python's stdlib HTTP server,
+not a framework adapter, to show the protocol boundary.
 
 Inbound federation endpoints should pass the detached signature envelope, the
 actual method/path/body, and the sender's trusted manifest to
@@ -346,6 +350,11 @@ references. federlet only signs and verifies the protocol exchange.
 
 | Module | Purpose |
 | --- | --- |
+| `federlet.prelude` | Small recommended import surface for common host integrations. |
+| `federlet.lowlevel` | Advanced crypto/signing primitives for tests, fixtures, and custom adapters. |
+| `federlet.bootstrap` | Thin seed-peer bootstrap loop over manifest fetch, admission, and introduction. |
+| `federlet.capability` | Convenience builder for signed capability summaries. |
+| `federlet.node` | Optional stateful facade over the functional protocol core. |
 | `federlet.models` | Pydantic wire models for manifests, introductions, membership, signatures, and signed request envelopes. |
 | `federlet.crypto` | Ed25519/JWK conversion, base64url helpers, and RFC 8785 canonical JSON bytes. |
 | `federlet.signing` | Manifest signing/checking and signed request construction/verification. |
@@ -355,6 +364,7 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.refresh` | One-shot manifest refresh and key-continuity decision helper. |
 | `federlet.discovery` | Bounded peer discovery from signed membership hints. |
 | `federlet.health` | Protocol and health probe classification helpers. |
+| `federlet.query` | Query request/response wire models and signed result-card helpers. |
 | `federlet.net` | SSRF guard for manifest and endpoint URLs. |
 | `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, capability summaries, protocol, and health calls. |
 | `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
@@ -375,8 +385,8 @@ This is the simplest steady-state deployment. No central directory is required.
 ### Scenario: a new peer joins
 
 1. Org C starts with one or more seed manifest URLs for the federation.
-2. Org C fetches and verifies those manifests with `fetch_manifest`.
-3. Org C sends a signed `IntroduceRequest` to seed peers.
+2. Org C calls `bootstrap_from_seeds`, which fetches/verifies each seed
+   manifest, applies local admission policy, and sends a signed introduction.
 4. Each seed peer admits or rejects Org C independently.
 5. Org C calls `get_members` to learn additional manifest URLs.
 6. The host may include Org C in its own query or routing layer once local membership state marks it active.
@@ -393,6 +403,17 @@ three local nodes.
 
 This keeps local peer selection useful during partial outages without making
 federlet own a background scheduler.
+
+### Scenario: a peer returns query result cards
+
+1. The host receives a signed `POST /query` and authenticates it with
+   `verify_peer_request`.
+2. The host parses `QueryRequest`; local search, authorization, ranking, and
+   coverage calculation stay in the host.
+3. The host returns a `QueryResponse` containing lightweight `ResultCard`
+   objects signed with `sign_result_card`.
+4. Downstream hosts can merge cards from many peers and still verify each
+   card's provenance with `verify_result_card`.
 
 ## Production notes
 
@@ -429,17 +450,74 @@ The tests include:
 
 ## API surface
 
-Primary imports are re-exported from `federlet`:
+For application integrations, prefer the high-level prelude:
+
+```python
+from federlet.prelude import (
+    AdmissionPolicy,
+    FederationClient,
+    FederationNode,
+    Manifest,
+    Membership,
+    MembershipTable,
+    PublicKey,
+    QueryRequest,
+    QueryResponse,
+    ResultCard,
+    SIGNATURE_HEADER,
+    SeedBootstrapReport,
+    UnauthorizedPeerRequest,
+    admit_manifest,
+    bootstrap_from_seeds,
+    check_manifest,
+    sign_capability_summary,
+    sign_manifest,
+    sign_result_card,
+    verify_peer_request,
+    verify_result_card,
+)
+```
+
+Advanced primitives remain available from `federlet.lowlevel` for tests,
+fixtures, and custom adapters:
+
+```python
+from federlet.lowlevel import (
+    JWK,
+    SignedRequest,
+    b64u_decode,
+    b64u_encode,
+    build_signed_request,
+    canonical_bytes,
+    find_jwk,
+    generate_key,
+    public_jwk,
+    public_key_from_jwk,
+    sha256_hex,
+    sign_dict,
+    sign_model,
+    verify_dict,
+    verify_model,
+    verify_signed_request,
+)
+```
+
+The root `federlet` package still re-exports the full surface for backwards
+compatibility:
 
 ```python
 from federlet import (
     AdmissionDecision,
     AdmissionPolicy,
+    SeedBootstrapOutcome,
+    SeedBootstrapReport,
     CapabilitySummary,
+    Coverage,
     DiscoveryOutcome,
     DiscoveryRefreshReport,
     EvidenceVerifier,
     FederationClient,
+    FederationNode,
     HealthResponse,
     IntroduceRequest,
     IntroduceResponse,
@@ -462,7 +540,12 @@ from federlet import (
     PeerState,
     ProtocolResponse,
     PublicKey,
+    QueryCriteria,
+    QueryRequest,
+    QueryResponse,
     RateLimiter,
+    ResultCard,
+    ResultProvenance,
     RevocationNotice,
     RevocationsResponse,
     ResponseSignatureError,
@@ -475,6 +558,7 @@ from federlet import (
     VerifiedPeer,
     admit_manifest,
     apply_revocation_notice,
+    bootstrap_from_seeds,
     b64u_decode,
     b64u_encode,
     build_signed_request,
@@ -492,12 +576,15 @@ from federlet import (
     refresh_peer_manifest,
     sha256_hex,
     sign_dict,
+    sign_capability_summary,
     sign_manifest,
     sign_model,
+    sign_result_card,
     verify_dict,
     verify_manifest,
     verify_model,
     verify_peer_request,
+    verify_result_card,
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,

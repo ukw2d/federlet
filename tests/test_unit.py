@@ -18,6 +18,7 @@ from federlet import (
     DisclosurePolicy,
     DiscoveryRefreshReport,
     DomainProofEvidence,
+    FederationNode,
     GenericAdmissionEvidence,
     HealthResponse,
     IntroduceRequest,
@@ -39,8 +40,13 @@ from federlet import (
     PeerState,
     ProtocolResponse,
     PublicKey,
+    QueryCriteria,
+    QueryRequest,
+    QueryResponse,
     RateLimiter,
     ResponseSignatureError,
+    ResultCard,
+    ResultProvenance,
     RevocationNotice,
     RevocationsResponse,
     TokenBucketRateLimiter,
@@ -65,12 +71,15 @@ from federlet import (
     refresh_discovered_members,
     refresh_peer_manifest,
     sha256_hex,
+    sign_capability_summary,
     sign_manifest,
     sign_model,
+    sign_result_card,
     verify_manifest,
     verify_model,
     verify_peer_request,
     verify_response_signature,
+    verify_result_card,
     verify_revocation_notice,
     verify_signed_request,
 )
@@ -497,6 +506,142 @@ def test_verify_response_signature_accepts_peer_signed_response():
     )
 
 
+def test_query_request_round_trips_host_owned_query_shape():
+    req = QueryRequest(
+        query_id="q-123",
+        query=QueryCriteria(
+            text="agent that reconciles supplier invoices",
+            filters={
+                "domains": ["finance"],
+                "skills": ["invoice.reconcile"],
+                "record_type": "oasf-agent",
+            },
+            locale="en-US",
+        ),
+        requested_fields=[
+            "record_id",
+            "name",
+            "summary",
+            "owner_org",
+            "domains",
+            "skills",
+        ],
+        limit=20,
+        timeout_ms=2000,
+        disclosure_context={
+            "requester_org": "org-a",
+            "purpose": "procurement-workflow",
+        },
+        routing_hint="local-only",
+    )
+
+    wire = req.model_dump(mode="json", exclude_none=True)
+    assert wire["query"]["locale"] == "en-US"
+    assert wire["routing_hint"] == "local-only"
+    assert QueryRequest.model_validate(wire) == req
+
+
+@pytest.mark.parametrize("field,value", [("limit", 0), ("timeout_ms", 0)])
+def test_query_request_rejects_non_positive_limits(field, value):
+    with pytest.raises(ValidationError):
+        QueryRequest(
+            query_id="q-123",
+            query=QueryCriteria(filters={"domains": ["finance"]}),
+            **{field: value},
+        )
+
+
+def test_result_card_sign_verify_and_tamper_detection():
+    key = generate_key()
+    owner = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
+    card = ResultCard(
+        record_id="agent:org-c:invoice-agent",
+        record_type="oasf-agent",
+        name="Invoice Reconciliation Agent",
+        summary="Reconciles supplier invoices against purchase orders.",
+        owner_org="org-c",
+        domains=["finance"],
+        skills=["invoice.reconcile"],
+        revision=17,
+        fetch_url=(
+            "https://dir.org-c.example/federation/v1/records/agent:org-c:invoice-agent"
+        ),
+        provenance=ResultProvenance(
+            node_id=owner.node_id,
+            content_hash=sha256_hex(b"canonical record bytes"),
+        ),
+    )
+
+    signed = sign_result_card(card, key, "k1")
+
+    assert signed.signature is not None
+    assert verify_result_card(owner, signed)
+    assert not verify_result_card(owner, signed.model_copy(update={"name": "Tampered"}))
+    assert not verify_result_card(owner, signed.model_copy(update={"signature": None}))
+
+
+def test_result_card_rejects_wrong_owner_or_unknown_key():
+    key = generate_key()
+    owner = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
+    signed = sign_result_card(
+        ResultCard(
+            record_id="agent:org-c:invoice-agent",
+            record_type="oasf-agent",
+            fetch_url="https://dir.org-c.example/federation/v1/records/a",
+            provenance=ResultProvenance(
+                node_id=owner.node_id,
+                content_hash=sha256_hex(b"record"),
+            ),
+        ),
+        key,
+        "k1",
+    )
+
+    wrong_owner = owner.model_copy(update={"node_id": "dir:other:prod"})
+    unknown_key_owner = _manifest(
+        generate_key(),
+        key_id="other-k1",
+        node_id=owner.node_id,
+        org_id=owner.org_id,
+    )
+
+    assert not verify_result_card(wrong_owner, signed)
+    assert not verify_result_card(unknown_key_owner, signed)
+
+
+def test_query_response_round_trips_signed_cards_and_response_signature():
+    key = generate_key()
+    peer = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
+    signed_card = sign_result_card(
+        ResultCard(
+            record_id="agent:org-c:invoice-agent",
+            record_type="oasf-agent",
+            fetch_url="https://dir.org-c.example/federation/v1/records/a",
+            provenance=ResultProvenance(
+                node_id=peer.node_id,
+                content_hash=sha256_hex(b"record"),
+            ),
+        ),
+        key,
+        "k1",
+    )
+    resp = sign_model(
+        QueryResponse(
+            query_id="q-123",
+            source_node_id=peer.node_id,
+            results=[signed_card],
+        ),
+        key,
+        "k1",
+    )
+    wire = resp.model_dump(mode="json", exclude_none=True)
+    rt = QueryResponse.model_validate(wire)
+
+    assert rt.coverage.searched_local_catalogue
+    assert verify_response_signature(peer, rt)
+    assert verify_result_card(peer, rt.results[0])
+
+
 def test_revocation_notice_round_trips_and_verifies():
     key = generate_key()
     notice = sign_model(
@@ -543,6 +688,29 @@ def test_capability_summary_round_trips_and_verifies():
     assert wire["expires_at"] == "2026-07-10T10:00:00Z"
     assert CapabilitySummary.model_validate(wire) == summary
     assert verify_model(summary, public_jwk(key))
+
+
+def test_sign_capability_summary_builds_verifiable_summary():
+    key = generate_key()
+    peer = _manifest(key)
+    summary = sign_capability_summary(
+        key,
+        "k1",
+        node_id=peer.node_id,
+        summary_version=2,
+        record_types=["oasf-agent"],
+        domains=["finance"],
+        skills_top=["invoice.reconcile"],
+        coverage_text="Finance agents.",
+        updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
+        ttl=timedelta(days=3),
+    )
+
+    wire = summary.model_dump(mode="json", exclude_none=True)
+    assert wire["updated_at"] == "2026-07-09T10:00:00Z"
+    assert wire["expires_at"] == "2026-07-12T10:00:00Z"
+    assert summary.signature is not None
+    assert verify_response_signature(peer, summary)
 
 
 def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
@@ -2404,6 +2572,23 @@ def test_public_crypto_and_signing_helpers_are_exported():
     assert canonical_bytes({"b": 2, "a": 1}) == b'{"a":1,"b":2}'
     assert sha256_hex(b"abc").startswith("sha256:")
     assert SIGNATURE_HEADER == "X-Federlet-Signature"
+
+
+def test_tiered_public_api_namespaces_are_importable():
+    from federlet import lowlevel, prelude
+
+    assert prelude.FederationClient is FederationClient
+    assert prelude.FederationNode is FederationNode
+    assert prelude.Manifest is Manifest
+    assert prelude.verify_peer_request is verify_peer_request
+    assert prelude.QueryRequest is QueryRequest
+    assert prelude.sign_result_card is sign_result_card
+    assert prelude.sign_capability_summary is sign_capability_summary
+
+    assert lowlevel.build_signed_request is build_signed_request
+    assert lowlevel.verify_signed_request is verify_signed_request
+    assert lowlevel.canonical_bytes is canonical_bytes
+    assert lowlevel.sign_model is sign_model
 
 
 def test_audit_record_includes_required_shape_and_timestamp():

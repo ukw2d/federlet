@@ -14,6 +14,12 @@ from .admission import (
     domain_evidence_verifier,
 )
 from .audit import audit_record
+from .bootstrap import (
+    SeedBootstrapOutcome,
+    SeedBootstrapReport,
+    bootstrap_from_seeds,
+)
+from .capability import sign_capability_summary
 from .client import (
     SIGNATURE_HEADER,
     FederationClient,
@@ -67,11 +73,22 @@ from .models import (
     SignedRequest,
 )
 from .net import SSRFError
+from .node import FederationNode
 from .protocols import (
     MembershipStore,
     NonceCache,
     RateLimiter,
     TokenBucketRateLimiter,
+)
+from .query import (
+    Coverage,
+    QueryCriteria,
+    QueryRequest,
+    QueryResponse,
+    ResultCard,
+    ResultProvenance,
+    sign_result_card,
+    verify_result_card,
 )
 from .refresh import ManifestRefreshDecision, refresh_peer_manifest
 from .signing import (
@@ -102,6 +119,7 @@ __all__ = [
     "ResponseSignatureError",
     "SIGNATURE_HEADER",
     "SSRFError",
+    "FederationNode",
     "AdmissionDecision",
     "AdmissionPolicy",
     "admit_manifest",
@@ -110,6 +128,10 @@ __all__ = [
     "KeyContinuityDecision",
     "KeyContinuityPolicy",
     "audit_record",
+    "SeedBootstrapOutcome",
+    "SeedBootstrapReport",
+    "bootstrap_from_seeds",
+    "sign_capability_summary",
     "JWK",
     "b64u_decode",
     "b64u_encode",
@@ -152,6 +174,14 @@ __all__ = [
     "NonceCache",
     "RateLimiter",
     "TokenBucketRateLimiter",
+    "Coverage",
+    "QueryCriteria",
+    "QueryRequest",
+    "QueryResponse",
+    "ResultCard",
+    "ResultProvenance",
+    "sign_result_card",
+    "verify_result_card",
     "ManifestRefreshDecision",
     "refresh_peer_manifest",
     "build_signed_request",
