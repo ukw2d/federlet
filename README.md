@@ -240,9 +240,10 @@ requests.
 
 ## Host adapter sketch
 
-Inbound federation endpoints should parse the detached signature envelope,
-choose the sender's current public key from its trusted manifest, then verify
-the request against the actual method, path, target node, and body bytes.
+Inbound federation endpoints should pass the detached signature envelope, the
+actual method/path/body, and the sender's trusted manifest to
+`verify_peer_request`. The helper parses the envelope, selects the advertised
+key, verifies the signed request, and returns the authenticated peer identity.
 
 Replay protection is the one place federlet needs cache semantics. Pass any object
 that implements `NonceCache.set(key, value, expire=..., exist=False)`. A
@@ -253,17 +254,13 @@ special-purpose verification.
 ```python
 from cashews import Cache
 
-from federlet import SIGNATURE_HEADER, SignedRequest, find_jwk, verify_signed_request
+from federlet import SIGNATURE_HEADER, UnauthorizedPeerRequest, verify_peer_request
 
 nonce_cache = Cache()
 nonce_cache.setup("redis://redis.internal:6379/0")
 
 
-class UnauthorizedPeerRequest(ValueError):
-    pass
-
-
-async def verify_peer_request(
+async def authenticate_peer_request(
     *,
     signature_header: str | None,
     method: str,
@@ -271,29 +268,17 @@ async def verify_peer_request(
     body: bytes,
     peer_manifest,
     self_node_id: str,
-) -> None:
-    if not signature_header:
-        raise UnauthorizedPeerRequest("missing_signature")
-
-    envelope = SignedRequest.model_validate_json(signature_header)
-    if envelope.signature is None:
-        raise UnauthorizedPeerRequest("unsigned")
-
-    jwk = find_jwk(peer_manifest.public_keys, envelope.signature.key_id)
-    if jwk is None:
-        raise UnauthorizedPeerRequest("unknown_key")
-
-    ok, reason = await verify_signed_request(
-        envelope,
-        jwk,
+) -> str:
+    verified = await verify_peer_request(
+        signature_header=signature_header,
+        peer_manifest=peer_manifest,
         self_node_id=self_node_id,
         method=method,
         path=path,
         body=body,
         cache=nonce_cache,
     )
-    if not ok:
-        raise UnauthorizedPeerRequest(reason)
+    return verified.source_node_id
 ```
 
 Your HTTP adapter decides how to map `UnauthorizedPeerRequest` to a response
@@ -486,6 +471,8 @@ from federlet import (
     Signature,
     SignedRequest,
     TokenBucketRateLimiter,
+    UnauthorizedPeerRequest,
+    VerifiedPeer,
     admit_manifest,
     apply_revocation_notice,
     b64u_decode,
@@ -510,6 +497,7 @@ from federlet import (
     verify_dict,
     verify_manifest,
     verify_model,
+    verify_peer_request,
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,
@@ -519,5 +507,7 @@ from federlet import (
 The lower-level signing helpers are public so downstream tests and host
 adapters can construct signed fixtures without importing `federlet.signing`
 directly. Production request verification should still go through
-`verify_signed_request`, because it performs target, method, path, body-hash,
-timestamp, signature, and nonce checks in one place.
+`verify_peer_request`, which handles the raw header-to-identity flow. If a host
+already has a parsed envelope and selected key, `verify_signed_request` remains
+available for the lower-level target, method, path, body-hash, timestamp,
+signature, and nonce checks.

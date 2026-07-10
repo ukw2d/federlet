@@ -44,6 +44,8 @@ from federlet import (
     RevocationNotice,
     RevocationsResponse,
     TokenBucketRateLimiter,
+    UnauthorizedPeerRequest,
+    VerifiedPeer,
     admit_manifest,
     apply_revocation_notice,
     audit_record,
@@ -67,6 +69,7 @@ from federlet import (
     sign_model,
     verify_manifest,
     verify_model,
+    verify_peer_request,
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,
@@ -842,6 +845,210 @@ async def test_method_path_mismatch_does_not_burn_nonce(cache):
         cache=cache,
     )
     assert ok == (True, "ok")
+
+
+async def test_verify_peer_request_returns_authenticated_identity(cache):
+    key = generate_key()
+    peer = _manifest(key)
+    body = b'{"x":1}'
+    env = build_signed_request(
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id=peer.node_id,
+        target_node_id="dir:org-b:prod",
+        method="POST",
+        path="/query",
+        body=body,
+        source_manifest_revision=peer.revision,
+    )
+
+    verified = await verify_peer_request(
+        signature_header=env.model_dump_json(exclude_none=True),
+        peer_manifest=peer,
+        self_node_id="dir:org-b:prod",
+        method="POST",
+        path="/query",
+        body=body,
+        cache=cache,
+    )
+
+    assert verified == VerifiedPeer(
+        source_node_id=peer.node_id,
+        key_id="k1",
+        source_manifest_revision=peer.revision,
+        request_id=env.request_id,
+    )
+
+
+async def test_verify_peer_request_authenticates_introduction_from_embedded_manifest(
+    cache,
+):
+    newcomer_key = generate_key()
+    newcomer = _manifest(
+        newcomer_key,
+        node_id="dir:org-c:prod",
+        org_id="org-c",
+        endpoint="https://dir.org-c.example/federation/v1",
+    )
+    intro = IntroduceRequest(
+        federation_id="f",
+        manifest_url="https://dir.org-c.example/.well-known/agent-directory.json",
+        manifest=newcomer,
+        nonce="intro-nonce",
+        timestamp=datetime.now(UTC),
+    )
+    body = intro.model_dump_json(exclude_none=True).encode()
+    env = build_signed_request(
+        newcomer_key,
+        "k1",
+        federation_id="f",
+        source_node_id=newcomer.node_id,
+        target_node_id="dir:org-a:prod",
+        method="POST",
+        path="/federation/v1/members/introduce",
+        body=body,
+        source_manifest_revision=newcomer.revision,
+    )
+
+    verified = await verify_peer_request(
+        signature_header=env.model_dump_json(exclude_none=True),
+        peer_manifest=intro.manifest,
+        self_node_id="dir:org-a:prod",
+        method="POST",
+        path="/federation/v1/members/introduce",
+        body=body,
+        cache=cache,
+    )
+
+    assert verified.source_node_id == newcomer.node_id
+    assert verified.key_id == "k1"
+    assert verified.source_manifest_revision == newcomer.revision
+
+
+@pytest.mark.parametrize(
+    "signature_header,expected_reason",
+    [
+        (None, "missing_signature"),
+        ("not-json", "malformed_envelope"),
+    ],
+)
+async def test_verify_peer_request_rejects_malformed_headers(
+    signature_header,
+    expected_reason,
+):
+    with pytest.raises(UnauthorizedPeerRequest) as exc:
+        await verify_peer_request(
+            signature_header=signature_header,
+            peer_manifest=_manifest(generate_key()),
+            self_node_id="b",
+            method="POST",
+            path="/query",
+            body=b"{}",
+        )
+
+    assert exc.value.reason == expected_reason
+
+
+@pytest.mark.parametrize(
+    "env_update,manifest_update,expected_reason",
+    [
+        ({"signature": None}, {}, "unsigned"),
+        ({"target_node_id": "wrong"}, {}, "wrong_target"),
+        ({}, {"node_id": "dir:other:prod"}, "source_mismatch"),
+    ],
+)
+async def test_verify_peer_request_rejects_invalid_envelopes(
+    env_update,
+    manifest_update,
+    expected_reason,
+):
+    key = generate_key()
+    peer = _manifest(key)
+    body = b'{"x":1}'
+    env = build_signed_request(
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id=peer.node_id,
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=body,
+        source_manifest_revision=peer.revision,
+    ).model_copy(update=env_update)
+    verifier_manifest = peer.model_copy(update=manifest_update)
+
+    with pytest.raises(UnauthorizedPeerRequest) as exc:
+        await verify_peer_request(
+            signature_header=env.model_dump_json(exclude_none=True),
+            peer_manifest=verifier_manifest,
+            self_node_id="b",
+            method="POST",
+            path="/query",
+            body=body,
+        )
+
+    assert exc.value.reason == expected_reason
+
+
+async def test_verify_peer_request_rejects_unknown_key():
+    key = generate_key()
+    other_key = generate_key()
+    peer = _manifest(other_key, key_id="other-k1")
+    env = build_signed_request(
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id=peer.node_id,
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=b"{}",
+    )
+
+    with pytest.raises(UnauthorizedPeerRequest) as exc:
+        await verify_peer_request(
+            signature_header=env.model_dump_json(exclude_none=True),
+            peer_manifest=peer,
+            self_node_id="b",
+            method="POST",
+            path="/query",
+            body=b"{}",
+        )
+
+    assert exc.value.reason == "unknown_key"
+
+
+async def test_verify_peer_request_rejects_replay(cache):
+    key = generate_key()
+    peer = _manifest(key)
+    env = build_signed_request(
+        key,
+        "k1",
+        federation_id="f",
+        source_node_id=peer.node_id,
+        target_node_id="b",
+        method="POST",
+        path="/query",
+        body=b"{}",
+    )
+    header = env.model_dump_json(exclude_none=True)
+    kwargs = {
+        "signature_header": header,
+        "peer_manifest": peer,
+        "self_node_id": "b",
+        "method": "POST",
+        "path": "/query",
+        "body": b"{}",
+        "cache": cache,
+    }
+
+    await verify_peer_request(**kwargs)
+    with pytest.raises(UnauthorizedPeerRequest) as exc:
+        await verify_peer_request(**kwargs)
+
+    assert exc.value.reason == "replay"
 
 
 async def test_members_rejects_unsigned_response():

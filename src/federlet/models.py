@@ -94,7 +94,6 @@ class IntroduceRequest(BaseModel):
     requested_disclosure: str = "federation"
     nonce: str
     timestamp: AwareDatetime
-    signature: Signature | None = None
 
     @field_serializer("timestamp", when_used="json")
     def _ser_ts(self, dt: datetime) -> str:

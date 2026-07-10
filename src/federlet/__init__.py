@@ -75,6 +75,8 @@ from .protocols import (
 )
 from .refresh import ManifestRefreshDecision, refresh_peer_manifest
 from .signing import (
+    UnauthorizedPeerRequest,
+    VerifiedPeer,
     build_signed_request,
     check_body_size,
     check_manifest,
@@ -86,6 +88,7 @@ from .signing import (
     verify_dict,
     verify_manifest,
     verify_model,
+    verify_peer_request,
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,
@@ -162,6 +165,9 @@ __all__ = [
     "verify_dict",
     "verify_manifest",
     "verify_model",
+    "UnauthorizedPeerRequest",
+    "VerifiedPeer",
+    "verify_peer_request",
     "verify_response_signature",
     "verify_revocation_notice",
     "verify_signed_request",

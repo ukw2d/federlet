@@ -300,13 +300,15 @@ Request:
   },
   "requested_disclosure": "federation",
   "nonce": "base64...",
-  "timestamp": "2026-07-01T10:00:00Z",
-  "signature": {
-    "key_id": "org-c-node-signing-1",
-    "sig": "..."
-  }
+  "timestamp": "2026-07-01T10:00:00Z"
 }
 ```
+
+The introduction request is authenticated by the standard signed-request
+envelope described in §11.1. Because the newcomer is not yet in the receiver's
+membership table, the receiver verifies that envelope against the public key in
+the manifest embedded in this request. There is no second inner introduction
+signature.
 
 Response:
 
@@ -452,7 +454,7 @@ POST https://dir.org-b.example/federation/v1/members/introduce
 
 Org A and Org B independently:
 
-1. verify Org C's signed introduction;
+1. verify Org C's signed-request envelope against Org C's embedded manifest;
 2. fetch Org C's manifest directly from `https://dir.org-c.example`;
 3. verify Org C's manifest signature and domain proof;
 4. check local admission policy;
@@ -626,6 +628,11 @@ The receiving node validates:
 - nonce was not replayed;
 - target node matches self;
 - source is allowed by local disclosure/rate policy.
+
+For `POST /members/introduce`, the source node may not yet be accepted in the
+local membership table. In that one case, the receiver validates the same
+signed-request envelope against the public key in the introduction body's
+embedded manifest, then applies its normal admission policy.
 
 ## 12. Query Protocol
 

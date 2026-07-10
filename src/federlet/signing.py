@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TypeVar
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ._time import utc_now
 from .crypto import JWK, b64u_encode, canonical_bytes, sign_bytes, verify_bytes
@@ -196,3 +197,88 @@ async def verify_signed_request(
         if not claimed:
             return False, "replay"
     return True, "ok"
+
+
+class UnauthorizedPeerRequest(ValueError):
+    """An inbound signed peer request failed verification.
+
+    `reason` is the machine-readable cause, drawn from the same vocabulary as
+    `verify_signed_request` plus `missing_signature`, `malformed_envelope`,
+    `source_mismatch`, and `unknown_key`.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class VerifiedPeer:
+    """The authenticated identity extracted from a verified peer request."""
+
+    source_node_id: str
+    key_id: str
+    source_manifest_revision: int
+    request_id: str
+
+
+async def verify_peer_request(
+    *,
+    signature_header: str | None,
+    peer_manifest: Manifest,
+    self_node_id: str,
+    method: str,
+    path: str,
+    body: bytes = b"",
+    max_body_bytes: int | None = None,
+    max_skew_seconds: int = 300,
+    cache: NonceCache | None = None,
+) -> VerifiedPeer:
+    """Verify one inbound signed peer request in a single call.
+
+    Folds the boilerplate every host repeats around `verify_signed_request`:
+    parse the detached `SignedRequest` from the header, reject an unsigned
+    envelope, select the signer's advertised JWK from the peer's trusted
+    manifest, then run the full target/method/path/body/timestamp/signature/
+    nonce verification. Returns the authenticated peer identity on success and
+    raises `UnauthorizedPeerRequest(reason)` on any failure.
+
+    `peer_manifest` is the already-trusted manifest for the sender. The caller
+    resolves it: for an ordinary request, by the envelope's `source_node_id`
+    from local membership material; for an introduction (a not-yet-admitted
+    newcomer), from the manifest embedded in the introduce body. `method` and
+    `path` must come from the actual inbound HTTP request, not the envelope.
+    """
+    if not signature_header:
+        raise UnauthorizedPeerRequest("missing_signature")
+    try:
+        env = SignedRequest.model_validate_json(signature_header)
+    except ValidationError:
+        raise UnauthorizedPeerRequest("malformed_envelope") from None
+    if env.signature is None:
+        raise UnauthorizedPeerRequest("unsigned")
+    if env.source_node_id != peer_manifest.node_id:
+        raise UnauthorizedPeerRequest("source_mismatch")
+    jwk = find_jwk(peer_manifest.public_keys, env.signature.key_id)
+    if jwk is None:
+        raise UnauthorizedPeerRequest("unknown_key")
+
+    ok, reason = await verify_signed_request(
+        env,
+        jwk,
+        self_node_id=self_node_id,
+        method=method,
+        path=path,
+        body=body,
+        max_body_bytes=max_body_bytes,
+        max_skew_seconds=max_skew_seconds,
+        cache=cache,
+    )
+    if not ok:
+        raise UnauthorizedPeerRequest(reason)
+    return VerifiedPeer(
+        source_node_id=env.source_node_id,
+        key_id=env.signature.key_id,
+        source_manifest_revision=env.source_manifest_revision,
+        request_id=env.request_id,
+    )
