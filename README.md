@@ -117,21 +117,16 @@ with replay protection.
 
 ```python
 import asyncio
-from datetime import datetime, timedelta, timezone
 
 from federlet.prelude import (
     AdmissionPolicy,
-    Manifest,
-    Membership,
-    PublicKey,
     admit_manifest,
-    sign_manifest,
+    build_signed_manifest,
     verify_peer_request,
 )
 from federlet.lowlevel import (
     build_signed_request,
     generate_key,
-    public_jwk,
 )
 
 
@@ -151,50 +146,24 @@ class MemoryNonceCache:
         self._seen.add(key)
         return True
 
-
-def make_manifest(
-    *,
-    node_id: str,
-    org_id: str,
-    endpoint: str,
-    key,
-    key_id: str,
-) -> Manifest:
-    now = datetime.now(timezone.utc)
-    manifest = Manifest(
-        node_id=node_id,
-        org_id=org_id,
-        federations=["supplier-network-prod"],
-        endpoint=endpoint,
-        protocol_versions=["agent-directory-federation/1"],
-        revision=1,
-        public_keys=[PublicKey(key_id=key_id, public_jwk=public_jwk(key))],
-        membership=Membership(
-            introduce_url=f"{endpoint}/members/introduce",
-            members_url=f"{endpoint}/members",
-        ),
-        issued_at=now,
-        expires_at=now + timedelta(days=7),
-    )
-    return sign_manifest(manifest, key, key_id)
-
-
 async def main() -> None:
     key_a = generate_key()
     key_b = generate_key()
-    manifest_a = make_manifest(
+    manifest_a = build_signed_manifest(
+        key_a,
+        "org-a-k1",
         node_id="dir:org-a:prod",
         org_id="org-a",
         endpoint="https://dir-a.example/federation/v1",
-        key=key_a,
-        key_id="org-a-k1",
+        federations=["supplier-network-prod"],
     )
-    manifest_b = make_manifest(
+    manifest_b = build_signed_manifest(
+        key_b,
+        "org-b-k1",
         node_id="dir:org-b:prod",
         org_id="org-b",
         endpoint="https://dir-b.example/federation/v1",
-        key=key_b,
-        key_id="org-b-k1",
+        federations=["supplier-network-prod"],
     )
 
     decision = await admit_manifest(
@@ -354,6 +323,7 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.lowlevel` | Advanced crypto/signing primitives for tests, fixtures, and custom adapters. |
 | `federlet.bootstrap` | Thin seed-peer bootstrap loop over manifest fetch, admission, and introduction. |
 | `federlet.capability` | Convenience builder for signed capability summaries. |
+| `federlet.publication` | Convenience builder for signed node manifests. |
 | `federlet.node` | Optional stateful facade over the functional protocol core. |
 | `federlet.models` | Pydantic wire models for manifests, introductions, membership, signatures, and signed request envelopes. |
 | `federlet.crypto` | Ed25519/JWK conversion, base64url helpers, and RFC 8785 canonical JSON bytes. |
@@ -469,6 +439,7 @@ from federlet.prelude import (
     UnauthorizedPeerRequest,
     admit_manifest,
     bootstrap_from_seeds,
+    build_signed_manifest,
     check_manifest,
     sign_capability_summary,
     sign_manifest,
@@ -559,6 +530,7 @@ from federlet import (
     admit_manifest,
     apply_revocation_notice,
     bootstrap_from_seeds,
+    build_signed_manifest,
     b64u_decode,
     b64u_encode,
     build_signed_request,

@@ -80,6 +80,7 @@ from .protocols import (
     RateLimiter,
     TokenBucketRateLimiter,
 )
+from .publication import build_signed_manifest
 from .query import (
     Coverage,
     QueryCriteria,
@@ -174,6 +175,7 @@ __all__ = [
     "NonceCache",
     "RateLimiter",
     "TokenBucketRateLimiter",
+    "build_signed_manifest",
     "Coverage",
     "QueryCriteria",
     "QueryRequest",

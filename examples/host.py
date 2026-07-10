@@ -16,7 +16,6 @@ import asyncio
 import json
 import threading
 from contextlib import AbstractContextManager
-from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -26,16 +25,14 @@ from federlet import (
     MemberRef,
     MembersResponse,
 )
-from federlet.lowlevel import SignedRequest, generate_key, public_jwk, sign_model
+from federlet.lowlevel import SignedRequest, generate_key, sign_model
 from federlet.prelude import (
     SIGNATURE_HEADER,
     FederationClient,
     Manifest,
-    Membership,
-    PublicKey,
     UnauthorizedPeerRequest,
+    build_signed_manifest,
     check_manifest,
-    sign_manifest,
     verify_peer_request,
 )
 
@@ -71,33 +68,6 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) -
     handler.wfile.write(body)
 
 
-def _make_manifest(
-    *,
-    key: Any,
-    key_id: str,
-    node_id: str,
-    org_id: str,
-    endpoint: str,
-) -> Manifest:
-    now = datetime.now(UTC)
-    manifest = Manifest(
-        node_id=node_id,
-        org_id=org_id,
-        federations=[FEDERATION_ID],
-        endpoint=endpoint,
-        protocol_versions=[PROTOCOL_VERSION],
-        revision=1,
-        public_keys=[PublicKey(key_id=key_id, public_jwk=public_jwk(key))],
-        membership=Membership(
-            introduce_url=f"{endpoint}/members/introduce",
-            members_url=f"{endpoint}/members",
-        ),
-        issued_at=now,
-        expires_at=now + timedelta(days=7),
-    )
-    return sign_manifest(manifest, key, key_id)
-
-
 class ExampleNode:
     """Host-owned node state.
 
@@ -116,12 +86,14 @@ class ExampleNode:
         self.nonces = MemoryNonceCache()
 
     def publish_at(self, endpoint: str) -> None:
-        self.manifest = _make_manifest(
-            key=self.key,
-            key_id=self.key_id,
+        self.manifest = build_signed_manifest(
+            self.key,
+            self.key_id,
             node_id=self.node_id,
             org_id=self.org_id,
             endpoint=endpoint,
+            federations=[FEDERATION_ID],
+            protocol_versions=[PROTOCOL_VERSION],
         )
 
     def trust(self, peer: Manifest) -> None:

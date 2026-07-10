@@ -57,6 +57,7 @@ from federlet import (
     audit_record,
     b64u_decode,
     b64u_encode,
+    build_signed_manifest,
     build_signed_request,
     canonical_bytes,
     check_body_size,
@@ -153,6 +154,34 @@ def test_manifest_sign_verify_and_tamper():
     m = _manifest(key)
     assert verify_manifest(m)
     assert not verify_manifest(m.model_copy(update={"revision": 999}))
+
+
+def test_build_signed_manifest_builds_standard_verifiable_manifest():
+    key = generate_key()
+    issued = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    manifest = build_signed_manifest(
+        key,
+        "org-a-k1",
+        node_id="dir:org-a:prod",
+        org_id="org-a",
+        endpoint="https://dir.org-a.example/federation/v1/",
+        federations=["supplier-network-prod"],
+        protocol_versions=["agent-directory-federation/1"],
+        capability_summary_url="https://dir.org-a.example/federation/v1/capability",
+        limits=ManifestLimits(max_query_rps_per_peer=3),
+        issued_at=issued,
+        ttl=timedelta(days=2),
+    )
+
+    assert manifest.endpoint == "https://dir.org-a.example/federation/v1"
+    assert (
+        manifest.membership.introduce_url
+        == "https://dir.org-a.example/federation/v1/members/introduce"
+    )
+    assert manifest.membership.members_url.endswith("/members")
+    assert manifest.expires_at == issued + timedelta(days=2)
+    assert manifest.signature is not None
+    assert verify_manifest(manifest)
 
 
 def test_manifest_membership_round_trips_as_typed_model():
@@ -2580,6 +2609,7 @@ def test_tiered_public_api_namespaces_are_importable():
     assert prelude.FederationClient is FederationClient
     assert prelude.FederationNode is FederationNode
     assert prelude.Manifest is Manifest
+    assert prelude.build_signed_manifest is build_signed_manifest
     assert prelude.verify_peer_request is verify_peer_request
     assert prelude.QueryRequest is QueryRequest
     assert prelude.sign_result_card is sign_result_card

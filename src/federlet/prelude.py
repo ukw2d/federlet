@@ -13,6 +13,7 @@ from .client import SIGNATURE_HEADER, FederationClient
 from .membership import MembershipTable
 from .models import Manifest, Membership, PublicKey
 from .node import FederationNode
+from .publication import build_signed_manifest
 from .query import (
     QueryRequest,
     QueryResponse,
@@ -45,6 +46,7 @@ __all__ = [
     "VerifiedPeer",
     "admit_manifest",
     "bootstrap_from_seeds",
+    "build_signed_manifest",
     "check_manifest",
     "sign_capability_summary",
     "sign_manifest",
