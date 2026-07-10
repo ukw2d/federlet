@@ -109,6 +109,36 @@ or registry policy. Those belong to the host application.
 | Federation calls | async `httpx` helpers for manifests, introductions, and members | peer selection, retries policy, logging, metrics |
 | Server | no server | your HTTP stack, routing, middleware, and deployment runtime |
 
+## Choosing the API layer
+
+Most applications should start with `federlet.prelude` or `FederationNode`.
+Drop to `federlet.lowlevel` only when building tests, fixtures, or a custom
+adapter that needs direct signing primitives.
+
+| Layer | Use it for | Typical imports |
+| --- | --- | --- |
+| `FederationNode` | Stateful host integration around one local node: publish a manifest, verify inbound peer requests, bootstrap from seeds, discover peers, refresh known peers, and choose eligible peers. | `FederationNode`, `MembershipTable` |
+| `federlet.prelude` | Functional integrations where the host owns state and calls individual helpers directly. This is the recommended import surface for most application code. | `build_signed_manifest`, `verify_peer_request`, `admit_manifest`, `FederationClient` |
+| `federlet.lowlevel` | Tests, fixtures, custom protocol adapters, and advanced signing/verification flows. | `generate_key`, `sign_model`, `build_signed_request`, `verify_signed_request` |
+
+Common integration paths:
+
+- Publishing a node: build a signed manifest with `build_signed_manifest`, serve
+  it from a stable HTTPS URL, and publish the URL through your existing trust or
+  onboarding process.
+- Authenticating inbound calls: look up the sender's trusted manifest, pass the
+  raw signature header, method, path, and body to `verify_peer_request`, then map
+  `UnauthorizedPeerRequest` to your HTTP error response.
+- Joining a federation: call `bootstrap_from_seeds` or
+  `FederationNode.bootstrap_from_seeds` with seed manifest URLs, then use
+  discovery to turn signed membership hints into locally admitted peers.
+- Serving protocol responses: sign standard response models with helpers such as
+  `sign_members_response`, `sign_revocations_response`, and
+  `sign_query_response`.
+- Query/result-card flows: parse `QueryRequest` in your application, perform
+  local search and authorization in host code, then return signed lightweight
+  `ResultCard` objects inside a signed `QueryResponse`.
+
 ## Quick start
 
 This example runs without a server. It creates two node manifests, admits one
@@ -417,6 +447,22 @@ The tests include:
 - SSRF guard behavior
 - introduction, membership exchange, and rejection scenarios
 - revocation, capability-summary, health, refresh, and discovery flows
+
+## Versioning and releases
+
+Release history is maintained in [`CHANGELOG.md`](CHANGELOG.md) using Keep a
+Changelog-style sections.
+
+federlet uses SemVer-style `MAJOR.MINOR.PATCH` versions and `vX.Y.Z` Git tags.
+For every release, update `pyproject.toml`, move completed entries from
+`Unreleased` into the release section, commit the change, and tag that exact
+commit with the matching version, for example `v0.1.0`.
+
+Until `1.0.0`, the public API should be treated as alpha-stage: patch releases
+are reserved for backwards-compatible fixes and documentation updates, while
+minor releases may include deliberate API changes when they are called out in the
+changelog. After `1.0.0`, breaking public API changes require a major version
+bump.
 
 ## API surface
 

@@ -1,6 +1,6 @@
 [project]
 name = "federlet"
-version = "0.1.0"
+version = "0.2.0"
 description = "Async Python library for decentralized, hubless federation between peer directory services."
 readme = "README.md"
 license = "Apache-2.0"
@@ -69,6 +69,7 @@ packages = ["src/federlet"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "/CHANGELOG.md",
   "/LICENSE",
   "/README.md",
   "/docs",
