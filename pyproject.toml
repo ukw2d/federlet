@@ -2,7 +2,37 @@
 name = "federlet"
 version = "0.1.0"
 description = "Federlet: a hubless HTTPS federation protocol for directory nodes."
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
+authors = [
+  { name = "Vlad Andreev", email = "vladyslav_andriyev@epam.com" },
+]
+maintainers = [
+  { name = "Vlad Andreev", email = "vladyslav_andriyev@epam.com" },
+]
+keywords = [
+  "federation",
+  "directory",
+  "manifest",
+  "ed25519",
+  "signed-http",
+  "peer-discovery",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Security :: Cryptography",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
 dependencies = [
   "cryptography>=42.0.0",
   "httpx>=0.27.0",
@@ -16,12 +46,29 @@ dependencies = [
 [project.optional-dependencies]
 cashews = ["cashews>=7.5.0"]
 
+[project.urls]
+Homepage = "https://github.com/ukw2d/pimx"
+Repository = "https://github.com/ukw2d/pimx"
+Issues = "https://github.com/ukw2d/pimx/issues"
+Documentation = "https://github.com/ukw2d/pimx#readme"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/federlet"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/LICENSE",
+  "/README.md",
+  "/docs",
+  "/pyproject.toml",
+  "/src/federlet",
+  "/tests",
+  "/uv.lock",
+]
 
 [dependency-groups]
 dev = [
