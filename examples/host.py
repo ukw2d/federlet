@@ -39,7 +39,8 @@ from federlet.prelude import (
 )
 
 FEDERATION_ID = "example-federation"
-PROTOCOL_VERSION = "agent-directory-federation/1"
+PROTOCOL_VERSION = "example-federation/1"
+MANIFEST_PATH = "/manifest.json"
 
 
 class MemoryNonceCache:
@@ -87,7 +88,7 @@ class ExampleNode:
         self.trusted_peers: dict[str, Manifest] = {}
         self.nonces = MemoryNonceCache()
 
-    def publish_at(self, endpoint: str) -> None:
+    def publish_at(self, endpoint: str, manifest_url: str) -> None:
         self.manifest = build_signed_manifest(
             self.key,
             self.key_id,
@@ -96,6 +97,7 @@ class ExampleNode:
             endpoint=endpoint,
             federations=[FEDERATION_ID],
             protocol_versions=[PROTOCOL_VERSION],
+            manifest_url=manifest_url,
         )
 
     def trust(self, peer: Manifest) -> None:
@@ -107,8 +109,7 @@ class ExampleNode:
             MemberRef(
                 node_id=peer.node_id,
                 org_id=peer.org_id,
-                manifest_url=f"{peer.endpoint.removesuffix('/federation/v1')}"
-                "/.well-known/agent-directory.json",
+                manifest_url=peer.manifest_url or peer.endpoint,
                 manifest_revision=peer.revision,
             )
             for peer in self.trusted_peers.values()
@@ -205,7 +206,7 @@ class HostServer(AbstractContextManager["HostServer"]):
 
             def do_GET(self) -> None:
                 assert node.manifest is not None
-                if self.path == "/.well-known/agent-directory.json":
+                if self.path == MANIFEST_PATH:
                     _json_response(
                         self,
                         200,
@@ -232,8 +233,9 @@ class HostServer(AbstractContextManager["HostServer"]):
                 _json_response(self, 404, {"error": "not_found"})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        endpoint = f"http://127.0.0.1:{self.server.server_port}/federation/v1"
-        node.publish_at(endpoint)
+        base = f"http://127.0.0.1:{self.server.server_port}"
+        endpoint = f"{base}/federation/v1"
+        node.publish_at(endpoint, f"{base}{MANIFEST_PATH}")
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         return self

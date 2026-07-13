@@ -1,4 +1,4 @@
-"""Query envelope and signed result-card helpers (ADR-005 §12)."""
+"""Query envelope and signed result-reference helpers."""
 
 from __future__ import annotations
 
@@ -38,26 +38,21 @@ class QueryRequest(BaseModel):
 
 
 class ResultProvenance(BaseModel):
-    """Provenance retained with a lightweight result card after merging."""
+    """Provenance retained with a lightweight result reference after merging."""
 
     node_id: str
     content_hash: str
 
 
-class ResultCard(BaseModel):
-    """Lightweight signed result returned by the owning node."""
+class ResultRef(BaseModel):
+    """Lightweight signed reference returned by the owning node."""
 
     model_config = ConfigDict(extra="allow")
 
     record_id: str
-    record_type: str
-    name: str | None = None
-    summary: str | None = None
-    owner_org: str | None = None
-    domains: list[str] = Field(default_factory=list)
-    skills: list[str] = Field(default_factory=list)
-    revision: int | None = None
     fetch_url: str
+    revision: int | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
     provenance: ResultProvenance
     signature: Signature | None = None
 
@@ -77,27 +72,25 @@ class QueryResponse(BaseModel):
 
     query_id: str
     source_node_id: str
-    results: list[ResultCard] = Field(default_factory=list)
+    results: list[ResultRef] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
     signature: Signature | None = None
 
 
-def sign_result_card(
-    card: ResultCard, key: Ed25519PrivateKey, key_id: str
-) -> ResultCard:
-    """Sign a result card with the owning node's advertised signing key."""
+def sign_result(result: ResultRef, key: Ed25519PrivateKey, key_id: str) -> ResultRef:
+    """Sign a result reference with the owning node's advertised signing key."""
 
-    return sign_model(card, key, key_id)
+    return sign_model(result, key, key_id)
 
 
-def verify_result_card(owner_manifest: Manifest, card: ResultCard) -> bool:
-    """Verify a result card against the owning node's current manifest key."""
+def verify_result(owner_manifest: Manifest, result: ResultRef) -> bool:
+    """Verify a result reference against the owning node's current manifest key."""
 
-    if card.signature is None:
+    if result.signature is None:
         return False
-    if card.provenance.node_id != owner_manifest.node_id:
+    if result.provenance.node_id != owner_manifest.node_id:
         return False
-    jwk = find_jwk(owner_manifest.public_keys, card.signature.key_id)
+    jwk = find_jwk(owner_manifest.public_keys, result.signature.key_id)
     if jwk is None:
         return False
-    return verify_model(card, jwk)
+    return verify_model(result, jwk)

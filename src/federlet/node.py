@@ -30,13 +30,6 @@ from .signing import (
 )
 
 
-def _manifest_url_from_membership(manifest: Manifest) -> str:
-    return manifest.membership.introduce_url.replace(
-        "/federation/v1/members/introduce",
-        "/.well-known/agent-directory.json",
-    )
-
-
 @dataclass
 class FederationNode:
     """Optional stateful facade for common host-side federation workflows.
@@ -138,8 +131,7 @@ class FederationNode:
         summary_version: int,
         coverage_text: str,
         record_types: list[str] | None = None,
-        domains: list[str] | None = None,
-        skills_top: list[str] | None = None,
+        facets: dict[str, list[str]] | None = None,
         updated_at: datetime | None = None,
         expires_at: datetime | None = None,
         ttl: timedelta = timedelta(days=7),
@@ -151,8 +143,7 @@ class FederationNode:
             summary_version=summary_version,
             coverage_text=coverage_text,
             record_types=record_types or (),
-            domains=domains or (),
-            skills_top=skills_top or (),
+            facets=facets or {},
             updated_at=updated_at,
             expires_at=expires_at,
             ttl=ttl,
@@ -173,7 +164,9 @@ class FederationNode:
             max_skew_seconds=max_skew_seconds,
         )
         if decision.accepted:
-            resolved_url = manifest_url or _manifest_url_from_membership(manifest)
+            resolved_url = manifest_url or manifest.manifest_url
+            if resolved_url is None:
+                return decision
             self._record_peer(manifest, resolved_url)
         return decision
 

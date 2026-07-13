@@ -45,8 +45,8 @@ from federlet import (
     QueryResponse,
     RateLimiter,
     ResponseSignatureError,
-    ResultCard,
     ResultProvenance,
+    ResultRef,
     RevocationNotice,
     RevocationsResponse,
     TokenBucketRateLimiter,
@@ -78,13 +78,13 @@ from federlet import (
     sign_members_response,
     sign_model,
     sign_query_response,
-    sign_result_card,
+    sign_result,
     sign_revocations_response,
     verify_manifest,
     verify_model,
     verify_peer_request,
     verify_response_signature,
-    verify_result_card,
+    verify_result,
     verify_revocation_notice,
     verify_signed_request,
 )
@@ -139,7 +139,7 @@ def _manifest(key, key_id="k1", **extra) -> Manifest:
 def _discovery_policy() -> AdmissionPolicy:
     return AdmissionPolicy(
         federation_id="f",
-        protocol_versions={"agent-directory-federation/1"},
+        protocol_versions={"example-federation/1"},
         require_expires_at=False,
     )
 
@@ -148,7 +148,7 @@ def _discoverable_manifest(key, key_id="k1", **extra) -> Manifest:
     return _manifest(
         key,
         key_id,
-        protocol_versions=["agent-directory-federation/1"],
+        protocol_versions=["example-federation/1"],
         **extra,
     )
 
@@ -162,7 +162,7 @@ def test_manifest_sign_verify_and_tamper():
 
 def test_build_signed_manifest_builds_standard_verifiable_manifest():
     key = generate_key()
-    issued = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
     manifest = build_signed_manifest(
         key,
         "org-a-k1",
@@ -170,7 +170,7 @@ def test_build_signed_manifest_builds_standard_verifiable_manifest():
         org_id="org-a",
         endpoint="https://dir.org-a.example/federation/v1/",
         federations=["supplier-network-prod"],
-        protocol_versions=["agent-directory-federation/1"],
+        protocol_versions=["example-federation/1"],
         capability_summary_url="https://dir.org-a.example/federation/v1/capability",
         limits=ManifestLimits(max_query_rps_per_peer=3),
         issued_at=issued,
@@ -361,7 +361,7 @@ async def test_admission_policy_accepts_valid_manifest():
     manifest = _manifest(
         key,
         federations=["supplier-network-prod"],
-        protocol_versions=["agent-directory-federation/1"],
+        protocol_versions=["example-federation/1"],
         endpoint="https://dir.org-a.example/federation/v1",
         auth_methods=["signed_http"],
         admission_evidence={"type": "domain_proof", "domain": "org-a.example"},
@@ -372,7 +372,7 @@ async def test_admission_policy_accepts_valid_manifest():
         manifest,
         AdmissionPolicy(
             federation_id="supplier-network-prod",
-            protocol_versions={"agent-directory-federation/1"},
+            protocol_versions={"example-federation/1"},
             evidence_verifier=domain_evidence_verifier,
         ),
     )
@@ -395,7 +395,7 @@ async def test_admission_policy_rejects_bad_claims(extra, reason):
     now = datetime.now(UTC)
     claims = {
         "federations": ["supplier-network-prod"],
-        "protocol_versions": ["agent-directory-federation/1"],
+        "protocol_versions": ["example-federation/1"],
         "auth_methods": ["signed_http"],
         "issued_at": _iso(now - timedelta(minutes=1)),
         "expires_at": _iso(now + timedelta(days=7)),
@@ -405,7 +405,7 @@ async def test_admission_policy_rejects_bad_claims(extra, reason):
         manifest,
         AdmissionPolicy(
             federation_id="supplier-network-prod",
-            protocol_versions={"agent-directory-federation/1"},
+            protocol_versions={"example-federation/1"},
         ),
     )
     assert not decision.accepted
@@ -417,11 +417,11 @@ async def test_admission_policy_requires_expiry_by_default():
     manifest = _manifest(
         key,
         federations=["supplier-network-prod"],
-        protocol_versions=["agent-directory-federation/1"],
+        protocol_versions=["example-federation/1"],
     )
     policy = AdmissionPolicy(
         federation_id="supplier-network-prod",
-        protocol_versions={"agent-directory-federation/1"},
+        protocol_versions={"example-federation/1"},
     )
     assert (await admit_manifest(manifest, policy)).reason == "missing_expires_at"
 
@@ -543,21 +543,19 @@ def test_query_request_round_trips_host_owned_query_shape():
     req = QueryRequest(
         query_id="q-123",
         query=QueryCriteria(
-            text="agent that reconciles supplier invoices",
+            text="record that matches a host-specific intent",
             filters={
-                "domains": ["finance"],
-                "skills": ["invoice.reconcile"],
-                "record_type": "oasf-agent",
+                "topic": ["finance"],
+                "operation": ["invoice.reconcile"],
+                "record_type": "workflow",
             },
             locale="en-US",
         ),
         requested_fields=[
             "record_id",
-            "name",
-            "summary",
-            "owner_org",
-            "domains",
-            "skills",
+            "title",
+            "description",
+            "facets",
         ],
         limit=20,
         timeout_ms=2000,
@@ -579,48 +577,57 @@ def test_query_request_rejects_non_positive_limits(field, value):
     with pytest.raises(ValidationError):
         QueryRequest(
             query_id="q-123",
-            query=QueryCriteria(filters={"domains": ["finance"]}),
+            query=QueryCriteria(filters={"topic": ["finance"]}),
             **{field: value},
         )
 
 
-def test_result_card_sign_verify_and_tamper_detection():
+def test_result_ref_sign_verify_and_tamper_detection():
     key = generate_key()
     owner = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
-    card = ResultCard(
-        record_id="agent:org-c:invoice-agent",
-        record_type="oasf-agent",
-        name="Invoice Reconciliation Agent",
-        summary="Reconciles supplier invoices against purchase orders.",
-        owner_org="org-c",
-        domains=["finance"],
-        skills=["invoice.reconcile"],
+    result = ResultRef(
+        record_id="record:org-c:invoice-tool",
         revision=17,
         fetch_url=(
-            "https://dir.org-c.example/federation/v1/records/agent:org-c:invoice-agent"
+            "https://node.org-c.example/federation/v1/records/record:org-c:invoice-tool"
         ),
+        attributes={
+            "record_type": "tool",
+            "display_name": "Invoice Reconciliation Tool",
+            "description": "Reconciles supplier invoices against purchase orders.",
+            "facets": {"topic": ["finance"], "action": ["invoice.reconcile"]},
+        },
         provenance=ResultProvenance(
             node_id=owner.node_id,
             content_hash=sha256_hex(b"canonical record bytes"),
         ),
     )
 
-    signed = sign_result_card(card, key, "k1")
+    signed = sign_result(result, key, "k1")
 
     assert signed.signature is not None
-    assert verify_result_card(owner, signed)
-    assert not verify_result_card(owner, signed.model_copy(update={"name": "Tampered"}))
-    assert not verify_result_card(owner, signed.model_copy(update={"signature": None}))
+    assert verify_result(owner, signed)
+    assert not verify_result(
+        owner,
+        signed.model_copy(
+            update={
+                "attributes": {
+                    **signed.attributes,
+                    "display_name": "Tampered",
+                }
+            }
+        ),
+    )
+    assert not verify_result(owner, signed.model_copy(update={"signature": None}))
 
 
-def test_result_card_rejects_wrong_owner_or_unknown_key():
+def test_result_ref_rejects_wrong_owner_or_unknown_key():
     key = generate_key()
     owner = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
-    signed = sign_result_card(
-        ResultCard(
-            record_id="agent:org-c:invoice-agent",
-            record_type="oasf-agent",
-            fetch_url="https://dir.org-c.example/federation/v1/records/a",
+    signed = sign_result(
+        ResultRef(
+            record_id="record:org-c:invoice-tool",
+            fetch_url="https://node.org-c.example/federation/v1/records/a",
             provenance=ResultProvenance(
                 node_id=owner.node_id,
                 content_hash=sha256_hex(b"record"),
@@ -638,18 +645,17 @@ def test_result_card_rejects_wrong_owner_or_unknown_key():
         org_id=owner.org_id,
     )
 
-    assert not verify_result_card(wrong_owner, signed)
-    assert not verify_result_card(unknown_key_owner, signed)
+    assert not verify_result(wrong_owner, signed)
+    assert not verify_result(unknown_key_owner, signed)
 
 
 def test_query_response_round_trips_signed_cards_and_response_signature():
     key = generate_key()
     peer = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
-    signed_card = sign_result_card(
-        ResultCard(
-            record_id="agent:org-c:invoice-agent",
-            record_type="oasf-agent",
-            fetch_url="https://dir.org-c.example/federation/v1/records/a",
+    signed_result = sign_result(
+        ResultRef(
+            record_id="record:org-c:invoice-tool",
+            fetch_url="https://node.org-c.example/federation/v1/records/a",
             provenance=ResultProvenance(
                 node_id=peer.node_id,
                 content_hash=sha256_hex(b"record"),
@@ -662,7 +668,7 @@ def test_query_response_round_trips_signed_cards_and_response_signature():
         QueryResponse(
             query_id="q-123",
             source_node_id=peer.node_id,
-            results=[signed_card],
+            results=[signed_result],
         ),
         key,
         "k1",
@@ -672,7 +678,7 @@ def test_query_response_round_trips_signed_cards_and_response_signature():
 
     assert rt.coverage.searched_local_catalogue
     assert verify_response_signature(peer, rt)
-    assert verify_result_card(peer, rt.results[0])
+    assert verify_result(peer, rt.results[0])
 
 
 def test_standard_response_signing_helpers_are_verifiable():
@@ -744,8 +750,7 @@ def test_capability_summary_round_trips_and_verifies():
             node_id="dir:org-a:prod",
             summary_version=1,
             record_types=["supplier"],
-            domains=["manufacturing"],
-            skills_top=["cnc"],
+            facets={"industry": ["manufacturing"], "process": ["cnc"]},
             coverage_text="Supplier catalogue",
             updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
             expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=UTC),
@@ -769,10 +774,9 @@ def test_sign_capability_summary_builds_verifiable_summary():
         "k1",
         node_id=peer.node_id,
         summary_version=2,
-        record_types=["oasf-agent"],
-        domains=["finance"],
-        skills_top=["invoice.reconcile"],
-        coverage_text="Finance agents.",
+        record_types=["tool"],
+        facets={"domain": ["finance"], "action": ["invoice.reconcile"]},
+        coverage_text="Finance tools.",
         updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
         ttl=timedelta(days=3),
     )
@@ -1132,7 +1136,7 @@ async def test_verify_peer_request_authenticates_introduction_from_embedded_mani
     )
     intro = IntroduceRequest(
         federation_id="f",
-        manifest_url="https://dir.org-c.example/.well-known/agent-directory.json",
+        manifest_url="https://dir.org-c.example/manifest.json",
         manifest=newcomer,
         nonce="intro-nonce",
         timestamp=datetime.now(UTC),
@@ -1466,8 +1470,7 @@ async def test_get_capability_summary_accepts_signed_response():
             node_id=peer.node_id,
             summary_version=1,
             record_types=["supplier"],
-            domains=["manufacturing"],
-            skills_top=["cnc"],
+            facets={"industry": ["manufacturing"], "process": ["cnc"]},
             coverage_text="Supplier catalogue",
             updated_at=datetime.now(UTC),
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -1579,7 +1582,7 @@ async def test_get_protocol_returns_parsed_response():
     payload = {
         "node_id": peer.node_id,
         "manifest_revision": peer.revision,
-        "protocol_versions": ["agent-directory-federation/1"],
+        "protocol_versions": ["example-federation/1"],
         "auth_methods": ["signed_http"],
         "limits": {"max_query_timeout_ms": 500},
         "extra": "host-owned",
@@ -1605,7 +1608,7 @@ async def test_get_protocol_returns_parsed_response():
     assert isinstance(resp, ProtocolResponse)
     assert resp.node_id == peer.node_id
     assert resp.manifest_revision == peer.revision
-    assert resp.protocol_versions == ["agent-directory-federation/1"]
+    assert resp.protocol_versions == ["example-federation/1"]
     assert resp.auth_methods == ["signed_http"]
     assert resp.limits is not None
     assert resp.limits.max_query_timeout_ms == 500
@@ -1674,7 +1677,7 @@ async def test_probe_peer_health_classifies_success():
                 200,
                 json={
                     "node_id": peer.node_id,
-                    "protocol_versions": ["agent-directory-federation/1"],
+                    "protocol_versions": ["example-federation/1"],
                 },
             )
         if request.url.path.endswith("/health"):
@@ -1739,7 +1742,7 @@ async def test_probe_peer_health_classifies_health_failure():
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/protocol"):
             return httpx.Response(
-                200, json={"protocol_versions": ["agent-directory-federation/1"]}
+                200, json={"protocol_versions": ["example-federation/1"]}
             )
         raise httpx.ConnectError("health unreachable")
 
@@ -1771,7 +1774,7 @@ async def test_probe_peer_health_classifies_unhealthy_status():
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/protocol"):
             return httpx.Response(
-                200, json={"protocol_versions": ["agent-directory-federation/1"]}
+                200, json={"protocol_versions": ["example-federation/1"]}
             )
         return httpx.Response(200, json={"node_id": peer.node_id, "status": "degraded"})
 
@@ -1822,7 +1825,7 @@ async def test_introduce_rejects_bad_signature_response():
     try:
         intro = IntroduceRequest(
             federation_id="f",
-            manifest_url="https://caller.example/.well-known/agent-directory.json",
+            manifest_url="https://caller.example/manifest.json",
             manifest=peer,
             nonce="n",
             timestamp=datetime.now(UTC),
@@ -2655,7 +2658,7 @@ def test_tiered_public_api_namespaces_are_importable():
     assert prelude.verify_peer_request is verify_peer_request
     assert prelude.QueryRequest is QueryRequest
     assert prelude.sign_members_response is sign_members_response
-    assert prelude.sign_result_card is sign_result_card
+    assert prelude.sign_result is sign_result
     assert prelude.sign_capability_summary is sign_capability_summary
 
     assert lowlevel.build_signed_request is build_signed_request
@@ -2724,17 +2727,17 @@ def test_disclose_members_excludes_ineligible_and_denied_peers():
     active = MemberRecord(
         node_id="dir:org-a:prod",
         org_id="org-a",
-        manifest_url="https://a.example/.well-known/agent-directory.json",
+        manifest_url="https://a.example/manifest.json",
         manifest_revision=2,
     )
     revoked = MemberRecord(
         node_id="dir:org-b:prod",
-        manifest_url="https://b.example/.well-known/agent-directory.json",
+        manifest_url="https://b.example/manifest.json",
         state=PeerState.REVOKED,
     )
     denied = MemberRecord(
         node_id="dir:org-c:prod",
-        manifest_url="https://c.example/.well-known/agent-directory.json",
+        manifest_url="https://c.example/manifest.json",
     )
 
     refs = disclose_members(
@@ -2753,7 +2756,7 @@ def test_disclose_members_excludes_ineligible_and_denied_peers():
 def test_disclose_members_applies_requester_specific_disclosure():
     rec = MemberRecord(
         node_id="dir:org-a:prod",
-        manifest_url="https://a.example/.well-known/agent-directory.json",
+        manifest_url="https://a.example/manifest.json",
     )
 
     refs = disclose_members(

@@ -3,7 +3,7 @@
 This module is intentionally small compared with the root `federlet` namespace.
 It contains the names most applications need to publish manifests, authenticate
 inbound peer requests, admit peers, use the client, and exchange query result
-cards. Lower-level signing and crypto primitives live in `federlet.lowlevel`.
+references. Lower-level signing and crypto primitives live in `federlet.lowlevel`.
 """
 
 from .admission import AdmissionPolicy, admit_manifest
@@ -17,9 +17,9 @@ from .publication import build_signed_manifest
 from .query import (
     QueryRequest,
     QueryResponse,
-    ResultCard,
-    sign_result_card,
-    verify_result_card,
+    ResultRef,
+    sign_result,
+    verify_result,
 )
 from .responses import (
     sign_introduce_response,
@@ -45,7 +45,7 @@ __all__ = [
     "PublicKey",
     "QueryRequest",
     "QueryResponse",
-    "ResultCard",
+    "ResultRef",
     "SIGNATURE_HEADER",
     "SeedBootstrapReport",
     "UnauthorizedPeerRequest",
@@ -60,7 +60,7 @@ __all__ = [
     "sign_members_response",
     "sign_query_response",
     "sign_revocations_response",
-    "sign_result_card",
+    "sign_result",
     "verify_peer_request",
-    "verify_result_card",
+    "verify_result",
 ]

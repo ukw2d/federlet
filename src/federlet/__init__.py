@@ -86,10 +86,10 @@ from .query import (
     QueryCriteria,
     QueryRequest,
     QueryResponse,
-    ResultCard,
     ResultProvenance,
-    sign_result_card,
-    verify_result_card,
+    ResultRef,
+    sign_result,
+    verify_result,
 )
 from .refresh import ManifestRefreshDecision, refresh_peer_manifest
 from .responses import (
@@ -186,10 +186,10 @@ __all__ = [
     "QueryCriteria",
     "QueryRequest",
     "QueryResponse",
-    "ResultCard",
     "ResultProvenance",
-    "sign_result_card",
-    "verify_result_card",
+    "ResultRef",
+    "sign_result",
+    "verify_result",
     "ManifestRefreshDecision",
     "refresh_peer_manifest",
     "sign_introduce_response",

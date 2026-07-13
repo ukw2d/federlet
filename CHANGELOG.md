@@ -9,6 +9,52 @@ backwards-compatible bugfixes and documentation-only updates.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-13
+
+### Changed
+
+- Reframed federlet as a domain-neutral federation library. Host products now
+  own their protocol identifier, manifest publication path, record vocabulary,
+  query semantics, result attributes, and capability facets.
+- Replaced `ResultCard` with `ResultRef`. The result reference core now contains
+  `record_id`, `fetch_url`, optional `revision`, host-owned `attributes`,
+  provenance, and signature.
+- Renamed `sign_result_card` to `sign_result` and `verify_result_card` to
+  `verify_result`.
+- Replaced typed `CapabilitySummary.domains` and
+  `CapabilitySummary.skills_top` fields with host-owned
+  `CapabilitySummary.facets`.
+- Made `build_signed_manifest(..., protocol_versions=...)` explicit; federlet no
+  longer provides a default host protocol identifier.
+- Added optional `Manifest.manifest_url` and removed path guessing from
+  `FederationNode.admit_peer`. Hosts must pass `manifest_url` explicitly or
+  advertise it in the peer manifest.
+- Restructured ADR-005 into a universal federation core with a Plakard profile
+  appendix for product-specific vocabulary.
+
+### Migration notes
+
+- Move previous `ResultCard.record_type`, `name`, `summary`, `owner_org`,
+  `domains`, and `skills` data under `ResultRef.attributes` using the host
+  schema.
+- Replace imports and calls:
+  - `ResultCard` → `ResultRef`
+  - `sign_result_card` → `sign_result`
+  - `verify_result_card` → `verify_result`
+- Move previous capability summary categories into `facets`, for example
+  `{"domains": [...], "skills": [...]}` in a Plakard host profile.
+- Pass `protocol_versions` explicitly when building manifests.
+- Pass `manifest_url` explicitly to `build_signed_manifest` or set
+  `Manifest.manifest_url`; do not rely on a derived well-known path.
+
+### Removed
+
+- Removed the `agent-directory-federation/1` default protocol version from the
+  library.
+- Removed hardcoded `/.well-known/agent-directory.json` manifest URL derivation
+  from the library.
+- Removed compatibility aliases for the former result-card API.
+
 ## [0.2.0] - 2026-07-10
 
 ### Added
@@ -46,12 +92,13 @@ backwards-compatible bugfixes and documentation-only updates.
 - Async `httpx` client helpers for manifest fetch, introduction, members,
   revocations, capability summaries, protocol, and health endpoints.
 - Seed-bootstrap helper, capability-summary signing helper, signed manifest
-  builder, typed response signing helpers, query/result-card wire models, and an
+  builder, typed response signing helpers, query/result-reference wire models, and an
   optional stateful `FederationNode` facade.
 - Structural protocols for host-owned nonce caches, rate limiters, and
   membership stores.
 - Typed package metadata via `py.typed`.
 
-[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ukw2d/federlet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ukw2d/federlet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ukw2d/federlet/releases/tag/v0.1.0

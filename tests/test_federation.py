@@ -101,7 +101,7 @@ async def test_client_probes_protocol_and_health(org_a, org_b):
 
     assert protocol.node_id == "dir:org-b:prod"
     assert protocol.manifest_revision == org_b.manifest.revision
-    assert protocol.protocol_versions == ["agent-directory-federation/1"]
+    assert protocol.protocol_versions == ["example-federation/1"]
     assert protocol.auth_methods == ["signed_http"]
     assert health.node_id == "dir:org-b:prod"
     assert health.status == "ok"
@@ -173,7 +173,7 @@ async def test_seed_bootstrap_helper_fetches_admits_and_introduces(org_a, org_b)
             local_manifest=org_c.manifest,
             policy=AdmissionPolicy(
                 federation_id=FED,
-                protocol_versions={"agent-directory-federation/1"},
+                protocol_versions={"example-federation/1"},
                 require_expires_at=False,
                 require_https=False,
                 allow_private_hosts=True,
@@ -213,7 +213,7 @@ async def test_stateful_facade_drives_bootstrap_discover_refresh_and_verify(
         manifest_revision=org_c.manifest.revision,
         admission_policy=AdmissionPolicy(
             federation_id=FED,
-            protocol_versions={"agent-directory-federation/1"},
+            protocol_versions={"example-federation/1"},
             require_expires_at=False,
             require_https=False,
             allow_private_hosts=True,

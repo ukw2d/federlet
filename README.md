@@ -42,7 +42,7 @@ federlet implements the protocol core from ADR-005:
 - membership, revocation, manifest refresh, and discovery state helpers
 - seed-bootstrap and capability-summary signing helpers
 - optional stateful facade for common host workflows
-- query envelope models and signed lightweight result-card helpers
+- query envelope models and signed lightweight result-reference helpers
 - protocol, health, revocation, capability-summary, and membership client calls
 - structural protocols for host-owned nonce caches, rate limiters, and stores
 - typed Pydantic models and `py.typed` packaging
@@ -135,9 +135,9 @@ Common integration paths:
 - Serving protocol responses: sign standard response models with helpers such as
   `sign_members_response`, `sign_revocations_response`, and
   `sign_query_response`.
-- Query/result-card flows: parse `QueryRequest` in your application, perform
+- Query/result-reference flows: parse `QueryRequest` in your application, perform
   local search and authorization in host code, then return signed lightweight
-  `ResultCard` objects inside a signed `QueryResponse`.
+  `ResultRef` objects inside a signed `QueryResponse`.
 
 ## Quick start
 
@@ -186,6 +186,8 @@ async def main() -> None:
         org_id="org-a",
         endpoint="https://dir-a.example/federation/v1",
         federations=["supplier-network-prod"],
+        protocol_versions=["example-federation/1"],
+        manifest_url="https://dir-a.example/manifest.json",
     )
     manifest_b = build_signed_manifest(
         key_b,
@@ -194,13 +196,15 @@ async def main() -> None:
         org_id="org-b",
         endpoint="https://dir-b.example/federation/v1",
         federations=["supplier-network-prod"],
+        protocol_versions=["example-federation/1"],
+        manifest_url="https://dir-b.example/manifest.json",
     )
 
     decision = await admit_manifest(
         manifest_b,
         AdmissionPolicy(
             federation_id="supplier-network-prod",
-            protocol_versions={"agent-directory-federation/1"},
+            protocol_versions={"example-federation/1"},
         ),
     )
     assert decision.accepted, decision.reason
@@ -313,7 +317,7 @@ from federlet import AdmissionPolicy, admit_manifest, domain_evidence_verifier
 
 policy = AdmissionPolicy(
     federation_id="supplier-network-prod",
-    protocol_versions={"agent-directory-federation/1"},
+    protocol_versions={"example-federation/1"},
     allowed_endpoint_domains={"example"},
     evidence_verifier=domain_evidence_verifier,
 )
@@ -364,7 +368,7 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.refresh` | One-shot manifest refresh and key-continuity decision helper. |
 | `federlet.discovery` | Bounded peer discovery from signed membership hints. |
 | `federlet.health` | Protocol and health probe classification helpers. |
-| `federlet.query` | Query request/response wire models and signed result-card helpers. |
+| `federlet.query` | Query request/response wire models and signed result-reference helpers. |
 | `federlet.net` | SSRF guard for manifest and endpoint URLs. |
 | `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, capability summaries, protocol, and health calls. |
 | `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
@@ -404,16 +408,16 @@ three local nodes.
 This keeps local peer selection useful during partial outages without making
 federlet own a background scheduler.
 
-### Scenario: a peer returns query result cards
+### Scenario: a peer returns query result references
 
 1. The host receives a signed `POST /query` and authenticates it with
    `verify_peer_request`.
 2. The host parses `QueryRequest`; local search, authorization, ranking, and
    coverage calculation stay in the host.
-3. The host returns a `QueryResponse` containing lightweight `ResultCard`
-   objects signed with `sign_result_card`.
-4. Downstream hosts can merge cards from many peers and still verify each
-   card's provenance with `verify_result_card`.
+3. The host returns a `QueryResponse` containing lightweight `ResultRef`
+   objects signed with `sign_result`.
+4. Downstream hosts can merge references from many peers and still verify each
+   reference's provenance with `verify_result`.
 
 ## Production notes
 
@@ -424,8 +428,8 @@ federlet own a background scheduler.
   by default.
 - Keep `allow_private=False` outside local tests so manifest fetching and
   admission reject private, loopback, link-local, and reserved endpoints.
-- Treat `domain_evidence_verifier` as a minimal sample for domain-shaped claims.
-  Use your own verifier for real organizational trust.
+- Treat `domain_evidence_verifier` as a minimal sample for DNS-domain-shaped
+  admission claims. Use your own verifier for real organizational trust.
 - Add application metrics around admission decisions, verification failures, and
   peer cooldown state.
 
@@ -479,7 +483,7 @@ from federlet.prelude import (
     PublicKey,
     QueryRequest,
     QueryResponse,
-    ResultCard,
+    ResultRef,
     SIGNATURE_HEADER,
     SeedBootstrapReport,
     UnauthorizedPeerRequest,
@@ -493,9 +497,9 @@ from federlet.prelude import (
     sign_members_response,
     sign_query_response,
     sign_revocations_response,
-    sign_result_card,
+    sign_result,
     verify_peer_request,
-    verify_result_card,
+    verify_result,
 )
 ```
 
@@ -523,8 +527,7 @@ from federlet.lowlevel import (
 )
 ```
 
-The root `federlet` package still re-exports the full surface for backwards
-compatibility:
+The root `federlet` package re-exports the full public surface:
 
 ```python
 from federlet import (
@@ -565,7 +568,7 @@ from federlet import (
     QueryRequest,
     QueryResponse,
     RateLimiter,
-    ResultCard,
+    ResultRef,
     ResultProvenance,
     RevocationNotice,
     RevocationsResponse,
@@ -605,12 +608,12 @@ from federlet import (
     sign_model,
     sign_query_response,
     sign_revocations_response,
-    sign_result_card,
+    sign_result,
     verify_dict,
     verify_manifest,
     verify_model,
     verify_peer_request,
-    verify_result_card,
+    verify_result,
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,

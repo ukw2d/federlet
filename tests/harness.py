@@ -63,14 +63,15 @@ class FederationNode:
         self.key_id = f"{node_id}-k1"
         self.port = _free_port()
         base = f"http://127.0.0.1:{self.port}"
-        self.manifest_url = f"{base}/.well-known/agent-directory.json"
+        self.manifest_url = f"{base}/manifest.json"
         self.endpoint = f"{base}/federation/v1"
         manifest = Manifest(
             node_id=node_id,
             org_id=org_id,
             federations=[federation_id],
             endpoint=self.endpoint,
-            protocol_versions=["agent-directory-federation/1"],
+            manifest_url=self.manifest_url,
+            protocol_versions=["example-federation/1"],
             revision=1,
             public_keys=[
                 PublicKey(key_id=self.key_id, public_jwk=public_jwk(self.key))
@@ -109,14 +110,11 @@ class FederationNode:
 
     def _admit(self, manifest: Manifest) -> None:
         self.peers[manifest.node_id] = manifest
-        manifest_url = manifest.membership.introduce_url.replace(
-            "/federation/v1/members/introduce",
-            "/.well-known/agent-directory.json",
-        )
+        assert manifest.manifest_url is not None
         self.membership_table.admit(
             MemberRecord(
                 node_id=manifest.node_id,
-                manifest_url=manifest_url,
+                manifest_url=manifest.manifest_url,
                 org_id=manifest.org_id,
                 manifest_revision=manifest.revision,
             )
@@ -269,7 +267,7 @@ class FederationNode:
             def do_GET(self):
                 path = urlparse(self.path).path
                 sig = self.headers.get(SIG, "")
-                if path == "/.well-known/agent-directory.json":
+                if path == "/manifest.json":
                     self._send(200, node.manifest.model_dump(exclude_none=True))
                 elif path == "/federation/v1/protocol":
                     self._send(
@@ -277,7 +275,7 @@ class FederationNode:
                         {
                             "node_id": node.node_id,
                             "manifest_revision": node.manifest.revision,
-                            "protocol_versions": ["agent-directory-federation/1"],
+                            "protocol_versions": ["example-federation/1"],
                             "auth_methods": ["signed_http"],
                         },
                     )

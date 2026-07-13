@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -20,8 +20,7 @@ def sign_capability_summary(
     summary_version: int,
     coverage_text: str,
     record_types: Iterable[str] = (),
-    domains: Iterable[str] = (),
-    skills_top: Iterable[str] = (),
+    facets: Mapping[str, Iterable[str]] | None = None,
     updated_at: datetime | None = None,
     expires_at: datetime | None = None,
     ttl: timedelta = timedelta(days=7),
@@ -34,8 +33,7 @@ def sign_capability_summary(
         node_id=node_id,
         summary_version=summary_version,
         record_types=list(record_types),
-        domains=list(domains),
-        skills_top=list(skills_top),
+        facets={name: list(values) for name, values in (facets or {}).items()},
         coverage_text=coverage_text,
         updated_at=updated,
         expires_at=expires,

@@ -69,6 +69,7 @@ class Manifest(BaseModel):
     bu_id: str | None = None
     federations: list[str] = Field(default_factory=list)
     endpoint: str
+    manifest_url: str | None = None
     protocol_versions: list[str] = Field(default_factory=list)
     revision: int = 0
     public_keys: list[PublicKey] = Field(default_factory=list)
@@ -155,8 +156,7 @@ class CapabilitySummary(BaseModel):
     node_id: str
     summary_version: int
     record_types: list[str] = Field(default_factory=list)
-    domains: list[str] = Field(default_factory=list)
-    skills_top: list[str] = Field(default_factory=list)
+    facets: dict[str, list[str]] = Field(default_factory=dict)
     coverage_text: str
     updated_at: AwareDatetime
     expires_at: AwareDatetime
