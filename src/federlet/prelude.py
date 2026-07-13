@@ -2,29 +2,31 @@
 
 This module is intentionally small compared with the root `federlet` namespace.
 It contains the names most applications need to publish manifests, authenticate
-inbound peer requests, admit peers, use the client, and exchange query result
-references. Lower-level signing and crypto primitives live in `federlet.lowlevel`.
+inbound peer requests, admit peers, use the client, and exchange operation
+envelopes. Lower-level signing and crypto primitives live in `federlet.lowlevel`.
 """
 
 from .admission import AdmissionPolicy, admit_manifest
 from .bootstrap import SeedBootstrapReport, bootstrap_from_seeds
-from .capability import sign_capability_summary
 from .client import SIGNATURE_HEADER, FederationClient
 from .membership import MembershipTable
 from .models import Manifest, Membership, PublicKey
 from .node import FederationNode
-from .publication import build_signed_manifest
-from .query import (
-    QueryRequest,
-    QueryResponse,
-    ResultRef,
-    sign_result,
-    verify_result,
+from .operations import (
+    OperationItem,
+    OperationRequest,
+    OperationResponse,
+    PayloadProvenance,
+    build_operation_item,
+    sign_operation_item,
+    sign_operation_payload,
+    verify_operation_item,
 )
+from .publication import build_signed_manifest
 from .responses import (
     sign_introduce_response,
     sign_members_response,
-    sign_query_response,
+    sign_operation_response,
     sign_revocations_response,
 )
 from .signing import (
@@ -42,10 +44,11 @@ __all__ = [
     "Manifest",
     "Membership",
     "MembershipTable",
+    "OperationItem",
+    "OperationRequest",
+    "OperationResponse",
+    "PayloadProvenance",
     "PublicKey",
-    "QueryRequest",
-    "QueryResponse",
-    "ResultRef",
     "SIGNATURE_HEADER",
     "SeedBootstrapReport",
     "UnauthorizedPeerRequest",
@@ -53,14 +56,15 @@ __all__ = [
     "admit_manifest",
     "bootstrap_from_seeds",
     "build_signed_manifest",
+    "build_operation_item",
     "check_manifest",
-    "sign_capability_summary",
     "sign_introduce_response",
+    "sign_operation_item",
+    "sign_operation_payload",
     "sign_manifest",
     "sign_members_response",
-    "sign_query_response",
+    "sign_operation_response",
     "sign_revocations_response",
-    "sign_result",
     "verify_peer_request",
-    "verify_result",
+    "verify_operation_item",
 ]

@@ -12,7 +12,7 @@ def audit_record(
     *,
     event: str,
     request_id: str | None = None,
-    query_id: str | None = None,
+    operation_id: str | None = None,
     source_node_id: str | None = None,
     target_node_id: str | None = None,
     manifest_revision: int | None = None,
@@ -26,7 +26,7 @@ def audit_record(
     }
     optional = {
         "request_id": request_id,
-        "query_id": query_id,
+        "operation_id": operation_id,
         "source_node_id": source_node_id,
         "target_node_id": target_node_id,
         "manifest_revision": manifest_revision,

@@ -1,6 +1,6 @@
 """Federlet.
 
-A hubless HTTPS federation protocol for directory nodes (ADR-005).
+A framework-neutral HTTPS federation protocol library.
 """
 
 from .admission import (
@@ -19,12 +19,10 @@ from .bootstrap import (
     SeedBootstrapReport,
     bootstrap_from_seeds,
 )
-from .capability import sign_capability_summary
 from .client import (
     SIGNATURE_HEADER,
     FederationClient,
     ManifestVerificationError,
-    MissingCapabilitySummaryEndpointError,
     MissingRevocationsEndpointError,
     ResponseSignatureError,
 )
@@ -53,7 +51,6 @@ from .membership import (
 )
 from .models import (
     AdmissionEvidence,
-    CapabilitySummary,
     Disclosure,
     DomainProofEvidence,
     GenericAdmissionEvidence,
@@ -74,6 +71,16 @@ from .models import (
 )
 from .net import SSRFError
 from .node import FederationNode
+from .operations import (
+    OperationItem,
+    OperationRequest,
+    OperationResponse,
+    PayloadProvenance,
+    build_operation_item,
+    sign_operation_item,
+    sign_operation_payload,
+    verify_operation_item,
+)
 from .protocols import (
     MembershipStore,
     NonceCache,
@@ -81,21 +88,11 @@ from .protocols import (
     TokenBucketRateLimiter,
 )
 from .publication import build_signed_manifest
-from .query import (
-    Coverage,
-    QueryCriteria,
-    QueryRequest,
-    QueryResponse,
-    ResultProvenance,
-    ResultRef,
-    sign_result,
-    verify_result,
-)
 from .refresh import ManifestRefreshDecision, refresh_peer_manifest
 from .responses import (
     sign_introduce_response,
     sign_members_response,
-    sign_query_response,
+    sign_operation_response,
     sign_revocations_response,
 )
 from .signing import (
@@ -120,7 +117,6 @@ from .signing import (
 
 __all__ = [
     "FederationClient",
-    "MissingCapabilitySummaryEndpointError",
     "ManifestVerificationError",
     "MissingRevocationsEndpointError",
     "ResponseSignatureError",
@@ -138,7 +134,6 @@ __all__ = [
     "SeedBootstrapOutcome",
     "SeedBootstrapReport",
     "bootstrap_from_seeds",
-    "sign_capability_summary",
     "JWK",
     "b64u_decode",
     "b64u_encode",
@@ -158,7 +153,6 @@ __all__ = [
     "apply_revocation_notice",
     "disclose_members",
     "AdmissionEvidence",
-    "CapabilitySummary",
     "Disclosure",
     "DomainProofEvidence",
     "GenericAdmissionEvidence",
@@ -182,19 +176,19 @@ __all__ = [
     "RateLimiter",
     "TokenBucketRateLimiter",
     "build_signed_manifest",
-    "Coverage",
-    "QueryCriteria",
-    "QueryRequest",
-    "QueryResponse",
-    "ResultProvenance",
-    "ResultRef",
-    "sign_result",
-    "verify_result",
+    "OperationItem",
+    "OperationRequest",
+    "OperationResponse",
+    "PayloadProvenance",
+    "build_operation_item",
+    "sign_operation_item",
+    "sign_operation_payload",
+    "verify_operation_item",
     "ManifestRefreshDecision",
     "refresh_peer_manifest",
     "sign_introduce_response",
     "sign_members_response",
-    "sign_query_response",
+    "sign_operation_response",
     "sign_revocations_response",
     "build_signed_request",
     "check_body_size",

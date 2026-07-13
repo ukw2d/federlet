@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -15,11 +15,10 @@ from .admission import (
     admit_manifest,
 )
 from .bootstrap import SeedBootstrapReport, bootstrap_from_seeds
-from .capability import sign_capability_summary
 from .client import FederationClient
 from .discovery import DiscoveryRefreshReport, refresh_discovered_members
 from .membership import MemberRecord, MembershipTable
-from .models import CapabilitySummary, IntroduceRequest, IntroduceResponse, Manifest
+from .models import IntroduceRequest, IntroduceResponse, Manifest
 from .protocols import NonceCache
 from .refresh import ManifestRefreshDecision, refresh_peer_manifest
 from .signing import (
@@ -124,30 +123,6 @@ class FederationNode:
 
     def sign_manifest(self, manifest: Manifest) -> Manifest:
         return sign_manifest(manifest, self.key, self.key_id)
-
-    def sign_capability_summary(
-        self,
-        *,
-        summary_version: int,
-        coverage_text: str,
-        record_types: list[str] | None = None,
-        facets: dict[str, list[str]] | None = None,
-        updated_at: datetime | None = None,
-        expires_at: datetime | None = None,
-        ttl: timedelta = timedelta(days=7),
-    ) -> CapabilitySummary:
-        return sign_capability_summary(
-            self.key,
-            self.key_id,
-            node_id=self.node_id,
-            summary_version=summary_version,
-            coverage_text=coverage_text,
-            record_types=record_types or (),
-            facets=facets or {},
-            updated_at=updated_at,
-            expires_at=expires_at,
-            ttl=ttl,
-        )
 
     async def admit_peer(
         self,

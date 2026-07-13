@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
 
@@ -40,9 +40,9 @@ class Disclosure(BaseModel):
 
 
 class ManifestLimits(BaseModel):
-    max_query_rps_per_peer: int | None = None
-    max_query_timeout_ms: int | None = None
-    max_results: int | None = None
+    max_operation_rps_per_peer: int | None = None
+    max_operation_timeout_ms: int | None = None
+    max_operation_items: int | None = None
 
 
 class GenericAdmissionEvidence(BaseModel):
@@ -75,7 +75,7 @@ class Manifest(BaseModel):
     public_keys: list[PublicKey] = Field(default_factory=list)
     auth_methods: list[str] = Field(default_factory=lambda: ["signed_http"])
     membership: Membership
-    capability_summary_url: str | None = None
+    extensions: dict[str, Any] = Field(default_factory=dict)
     admission_evidence: AdmissionEvidence | None = None
     disclosure: Disclosure | None = None
     limits: ManifestLimits | None = None
@@ -152,23 +152,8 @@ class RevocationsResponse(BaseModel):
     signature: Signature | None = None
 
 
-class CapabilitySummary(BaseModel):
-    node_id: str
-    summary_version: int
-    record_types: list[str] = Field(default_factory=list)
-    facets: dict[str, list[str]] = Field(default_factory=dict)
-    coverage_text: str
-    updated_at: AwareDatetime
-    expires_at: AwareDatetime
-    signature: Signature | None = None
-
-    @field_serializer("updated_at", "expires_at", when_used="json")
-    def _ser_ts(self, dt: datetime) -> str:
-        return iso_z(dt) or ""
-
-
 class ProtocolResponse(BaseModel):
-    """Lightweight protocol capability response from GET /protocol."""
+    """Lightweight protocol metadata response from GET /protocol."""
 
     model_config = ConfigDict(extra="allow")
 

@@ -25,7 +25,7 @@ async def probe_peer_health(
     client: FederationClient,
     peer: Manifest,
 ) -> PeerHealthProbeResult:
-    """Call one peer's protocol and health probes once and classify the result."""
+    """Call one peer's protocol and health probes once and classify the outcome."""
     try:
         protocol = await client.get_protocol(peer)
     except Exception as exc:

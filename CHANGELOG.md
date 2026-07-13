@@ -9,6 +9,43 @@ backwards-compatible bugfixes and documentation-only updates.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
+### Changed
+
+- Replaced the query/result API with generic operation envelopes:
+  `OperationRequest`, `OperationResponse`, `OperationItem`, and
+  `PayloadProvenance`.
+- Replaced `sign_query_response` with `sign_operation_response`.
+- Replaced result-item signing helpers with `sign_operation_item`,
+  `sign_operation_payload`, and `verify_operation_item`.
+- Replaced `Manifest.capability_summary_url` with opaque
+  `Manifest.extensions` for host protocol metadata.
+- Renamed manifest limits from query/result terminology to operation
+  terminology: `max_operation_rps_per_peer`, `max_operation_timeout_ms`, and
+  `max_operation_items`.
+- Renamed audit `query_id` metadata to `operation_id`.
+- Updated ADR-005, README, package metadata, and tests to position federlet as a
+  host-protocol-agnostic federation core.
+
+### Migration notes
+
+- Replace imports and constructors:
+  - `QueryRequest` → `OperationRequest`
+  - `QueryResponse` → `OperationResponse`
+  - `ResultRef` / `FederatedResult` → `OperationItem`
+  - `ResultProvenance` → `PayloadProvenance`
+  - `sign_query_response` → `sign_operation_response`
+  - `sign_result` → `sign_operation_item` or `sign_operation_payload`
+  - `verify_result` → `verify_operation_item`
+- Move query criteria, requested fields, coverage, ranking, fetch references,
+  and other host semantics into `OperationRequest.payload`,
+  `OperationRequest.metadata`, `OperationResponse.payload`,
+  `OperationResponse.metadata`, or `OperationItem.payload`.
+- Move host capability or profile discovery URLs into `Manifest.extensions`.
+- Remove use of `CapabilitySummary` and `sign_capability_summary` from federlet;
+  hosts own those models if they need them.
+
 ## [0.3.0] - 2026-07-13
 
 ### Changed
@@ -92,13 +129,14 @@ backwards-compatible bugfixes and documentation-only updates.
 - Async `httpx` client helpers for manifest fetch, introduction, members,
   revocations, capability summaries, protocol, and health endpoints.
 - Seed-bootstrap helper, capability-summary signing helper, signed manifest
-  builder, typed response signing helpers, query/result-reference wire models, and an
-  optional stateful `FederationNode` facade.
+  builder, typed response signing helpers, query/result-reference wire models,
+  and an optional stateful `FederationNode` facade.
 - Structural protocols for host-owned nonce caches, rate limiters, and
   membership stores.
 - Typed package metadata via `py.typed`.
 
-[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/ukw2d/federlet/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ukw2d/federlet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ukw2d/federlet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ukw2d/federlet/releases/tag/v0.1.0

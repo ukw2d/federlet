@@ -9,7 +9,7 @@
 [![mypy](https://img.shields.io/badge/types-mypy_checked-blue.svg)](https://mypy-lang.org/)
 
 Federlet is an async Python library for decentralized, hubless federation
-between peer directory services. It provides signed manifests, signed HTTP
+between peer services. It provides signed manifests, signed HTTP
 requests, Ed25519 verification, replay protection, key-continuity checks, local
 admission policy, SSRF-safe manifest fetching, health probing, revocations, and
 peer discovery helpers.
@@ -17,17 +17,17 @@ peer discovery helpers.
 Use federlet when independent services need zero-trust, service-to-service
 federation without a central registry or control-plane hub. Your application
 keeps control of HTTP routing, persistence, trust policy, key storage, semantic
-search, observability, and deployment topology.
+operation semantics, observability, and deployment topology.
 
 ## At a glance
 
 | Question | Answer |
 | --- | --- |
-| What is it? | A framework-neutral protocol library for peer directory federation. |
+| What is it? | A framework-neutral protocol library for peer service federation. |
 | Trust model | Signed manifests, Ed25519 signed requests, local admission policy, and key-continuity checks. |
 | Runtime | Async Python, `httpx`, Pydantic v2, structural protocols for host-owned storage. |
 | Deployment shape | No central hub, no bundled server, no required cache backend. |
-| Host responsibilities | HTTP routing, persistence, private-key storage, trust material, semantic search, logging, metrics, and retries. |
+| Host responsibilities | HTTP routing, persistence, private-key storage, trust material, operation semantics, logging, metrics, and retries. |
 
 ## Features
 
@@ -40,11 +40,11 @@ federlet implements the protocol core from ADR-005:
 - local manifest admission policy and key-continuity checks
 - SSRF protection for manifest URLs and admitted endpoints
 - membership, revocation, manifest refresh, and discovery state helpers
-- seed-bootstrap and capability-summary signing helpers
+- seed-bootstrap helpers
 - optional stateful facade for common host workflows
-- query envelope models and signed lightweight result-reference helpers
-- protocol, health, revocation, capability-summary, and membership client calls
-- structural protocols for host-owned nonce caches, rate limiters, and stores
+- generic operation envelope models and signed operation-item helpers
+- protocol, health, revocation, and membership client calls
+- structural protocols for host-owned nonce caches, rate limiters, and services
 - typed Pydantic models and `py.typed` packaging
 
 federlet does not run your service. It is a framework-neutral protocol library
@@ -83,7 +83,7 @@ pip install "federlet[cashews]"
 
 ## When to use federlet
 
-Use federlet when independent directory nodes need to discover each other and make
+Use federlet when independent services need to discover each other and make
 signed, auditable requests without a central hub. Typical examples:
 
 - two organizations already trust each other and want signed peer requests
@@ -93,9 +93,9 @@ signed, auditable requests without a central hub. Typical examples:
 Do not use federlet as a complete federation server. It is the protocol library you
 wire into your HTTP adapter, worker, or service runtime.
 
-federlet deliberately does not implement semantic directory search, record fetch,
-query fan-out, coverage calculation, principal mapping, namespace authorization,
-or registry policy. Those belong to the host application.
+federlet deliberately does not implement host operations, payload schemas,
+fan-out, coverage calculation, principal mapping, namespace authorization, or
+application policy. Those belong to the host application.
 
 ## Core concepts
 
@@ -134,10 +134,10 @@ Common integration paths:
   discovery to turn signed membership hints into locally admitted peers.
 - Serving protocol responses: sign standard response models with helpers such as
   `sign_members_response`, `sign_revocations_response`, and
-  `sign_query_response`.
-- Query/result-reference flows: parse `QueryRequest` in your application, perform
-  local search and authorization in host code, then return signed lightweight
-  `ResultRef` objects inside a signed `QueryResponse`.
+  `sign_operation_response`.
+- Operation-envelope flows: parse `OperationRequest` in your application,
+  execute host-owned logic, then return an `OperationResponse` with signed
+  `OperationItem` payloads when per-item provenance matters.
 
 ## Quick start
 
@@ -182,28 +182,28 @@ async def main() -> None:
     manifest_a = build_signed_manifest(
         key_a,
         "org-a-k1",
-        node_id="dir:org-a:prod",
+        node_id="node:org-a:prod",
         org_id="org-a",
-        endpoint="https://dir-a.example/federation/v1",
-        federations=["supplier-network-prod"],
+        endpoint="https://node-a.example/federation/v1",
+        federations=["example-federation-prod"],
         protocol_versions=["example-federation/1"],
-        manifest_url="https://dir-a.example/manifest.json",
+        manifest_url="https://node-a.example/manifest.json",
     )
     manifest_b = build_signed_manifest(
         key_b,
         "org-b-k1",
-        node_id="dir:org-b:prod",
+        node_id="node:org-b:prod",
         org_id="org-b",
-        endpoint="https://dir-b.example/federation/v1",
-        federations=["supplier-network-prod"],
+        endpoint="https://node-b.example/federation/v1",
+        federations=["example-federation-prod"],
         protocol_versions=["example-federation/1"],
-        manifest_url="https://dir-b.example/manifest.json",
+        manifest_url="https://node-b.example/manifest.json",
     )
 
     decision = await admit_manifest(
         manifest_b,
         AdmissionPolicy(
-            federation_id="supplier-network-prod",
+            federation_id="example-federation-prod",
             protocol_versions={"example-federation/1"},
         ),
     )
@@ -213,7 +213,7 @@ async def main() -> None:
     envelope = build_signed_request(
         key_a,
         "org-a-k1",
-        federation_id="supplier-network-prod",
+        federation_id="example-federation-prod",
         source_node_id=manifest_a.node_id,
         target_node_id=manifest_b.node_id,
         method="POST",
@@ -297,7 +297,7 @@ hash are valid. Failed unauthenticated requests do not consume nonces.
 
 For per-peer request throttling, hosts can inject anything that implements the
 `RateLimiter` protocol. `TokenBucketRateLimiter` is an in-memory reference
-implementation that reads `Manifest.limits.max_query_rps_per_peer`; production
+implementation that reads `Manifest.limits.max_operation_rps_per_peer`; production
 deployments should keep the bucket state in Redis, Valkey, or an equivalent
 shared store.
 
@@ -316,7 +316,7 @@ partner credentials, or charter keys, belongs in your callback.
 from federlet import AdmissionPolicy, admit_manifest, domain_evidence_verifier
 
 policy = AdmissionPolicy(
-    federation_id="supplier-network-prod",
+    federation_id="example-federation-prod",
     protocol_versions={"example-federation/1"},
     allowed_endpoint_domains={"example"},
     evidence_verifier=domain_evidence_verifier,
@@ -336,8 +336,8 @@ verifies signed introduction and membership responses.
 from federlet import FederationClient
 
 async with FederationClient(
-    node_id="dir:org-a:prod",
-    federation_id="supplier-network-prod",
+    node_id="node:org-a:prod",
+    federation_id="example-federation-prod",
     key=key,
     key_id=key_id,
     manifest_revision=signed_manifest.revision,
@@ -356,7 +356,6 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.prelude` | Small recommended import surface for common host integrations. |
 | `federlet.lowlevel` | Advanced crypto/signing primitives for tests, fixtures, and custom adapters. |
 | `federlet.bootstrap` | Thin seed-peer bootstrap loop over manifest fetch, admission, and introduction. |
-| `federlet.capability` | Convenience builder for signed capability summaries. |
 | `federlet.publication` | Convenience builder for signed node manifests. |
 | `federlet.node` | Optional stateful facade over the functional protocol core. |
 | `federlet.models` | Pydantic wire models for manifests, introductions, membership, signatures, and signed request envelopes. |
@@ -368,9 +367,9 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.refresh` | One-shot manifest refresh and key-continuity decision helper. |
 | `federlet.discovery` | Bounded peer discovery from signed membership hints. |
 | `federlet.health` | Protocol and health probe classification helpers. |
-| `federlet.query` | Query request/response wire models and signed result-reference helpers. |
+| `federlet.operations` | Generic operation request/response envelopes and signed operation-item helpers. |
 | `federlet.net` | SSRF guard for manifest and endpoint URLs. |
-| `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, capability summaries, protocol, and health calls. |
+| `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, protocol, and health calls. |
 | `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
 
 ## Usage scenarios
@@ -384,7 +383,7 @@ references. federlet only signs and verifies the protocol exchange.
 5. Org B verifies the signed request and signs the membership response.
 6. Org A verifies the response signature and treats returned members as discovery hints.
 
-This is the simplest steady-state deployment. No central directory is required.
+This is the simplest steady-state deployment. No central hub is required.
 
 ### Scenario: a new peer joins
 
@@ -393,7 +392,7 @@ This is the simplest steady-state deployment. No central directory is required.
    manifest, applies local admission policy, and sends a signed introduction.
 4. Each seed peer admits or rejects Org C independently.
 5. Org C calls `get_members` to learn additional manifest URLs.
-6. The host may include Org C in its own query or routing layer once local membership state marks it active.
+6. The host may include Org C in its own operation routing layer once local membership state marks it active.
 
 The integration test in `tests/test_federation.py` exercises this flow with
 three local nodes.
@@ -408,20 +407,20 @@ three local nodes.
 This keeps local peer selection useful during partial outages without making
 federlet own a background scheduler.
 
-### Scenario: a peer returns query result references
+### Scenario: a peer returns operation payloads
 
-1. The host receives a signed `POST /query` and authenticates it with
+1. The host receives a signed operation request and authenticates it with
    `verify_peer_request`.
-2. The host parses `QueryRequest`; local search, authorization, ranking, and
-   coverage calculation stay in the host.
-3. The host returns a `QueryResponse` containing lightweight `ResultRef`
-   objects signed with `sign_result`.
-4. Downstream hosts can merge references from many peers and still verify each
-   reference's provenance with `verify_result`.
+2. The host parses `OperationRequest`; authorization, execution, aggregation,
+   and response metadata stay in the host.
+3. The host returns an `OperationResponse` containing signed `OperationItem`
+   payloads when individual payload provenance matters.
+4. Downstream hosts can aggregate payloads from many peers and still verify each
+   item's provenance with `verify_operation_item`.
 
 ## Production notes
 
-- Store private keys in your platform key manager or secret store, not in code.
+- Store private keys in your platform key manager or secret service, not in code.
 - Rotate keys by publishing overlapping `public_keys` in the manifest and
   advancing `revision`.
 - Publish manifests over HTTPS and set `expires_at`; admission requires expiry
@@ -450,7 +449,7 @@ The tests include:
 - admission policy failures
 - SSRF guard behavior
 - introduction, membership exchange, and rejection scenarios
-- revocation, capability-summary, health, refresh, and discovery flows
+- revocation, health, refresh, and discovery flows
 
 ## Versioning and releases
 
@@ -468,6 +467,30 @@ minor releases may include deliberate API changes when they are called out in th
 changelog. After `1.0.0`, breaking public API changes require a major version
 bump.
 
+## Migrating to the operation API
+
+Version `0.4.0` separates federlet core from host application protocols.
+Federlet now signs and verifies generic operation envelopes; host packages own
+their request, response, metadata, and discovery models.
+
+Replace imports and calls as follows:
+
+| Before | After |
+| --- | --- |
+| `QueryRequest` | `OperationRequest` |
+| `QueryResponse` | `OperationResponse` |
+| `ResultRef` / `FederatedResult` | `OperationItem` |
+| `ResultProvenance` | `PayloadProvenance` |
+| `sign_query_response` | `sign_operation_response` |
+| `sign_result` | `sign_operation_item` or `sign_operation_payload` |
+| `verify_result` | `verify_operation_item` |
+| `Manifest.capability_summary_url` | `Manifest.extensions` |
+| `CapabilitySummary` / `sign_capability_summary` | host-owned models/helpers |
+
+Move host-owned criteria, limits, coverage, ranking, fetch references, and
+profile discovery metadata into operation payloads, operation metadata, item
+payloads, or manifest extensions.
+
 ## API surface
 
 For application integrations, prefer the high-level prelude:
@@ -480,26 +503,28 @@ from federlet.prelude import (
     Manifest,
     Membership,
     MembershipTable,
+    OperationItem,
+    OperationRequest,
+    OperationResponse,
+    PayloadProvenance,
     PublicKey,
-    QueryRequest,
-    QueryResponse,
-    ResultRef,
     SIGNATURE_HEADER,
     SeedBootstrapReport,
     UnauthorizedPeerRequest,
     admit_manifest,
     bootstrap_from_seeds,
+    build_operation_item,
     build_signed_manifest,
     check_manifest,
-    sign_capability_summary,
     sign_introduce_response,
     sign_manifest,
     sign_members_response,
-    sign_query_response,
+    sign_operation_item,
+    sign_operation_payload,
+    sign_operation_response,
     sign_revocations_response,
-    sign_result,
     verify_peer_request,
-    verify_result,
+    verify_operation_item,
 )
 ```
 
@@ -535,8 +560,6 @@ from federlet import (
     AdmissionPolicy,
     SeedBootstrapOutcome,
     SeedBootstrapReport,
-    CapabilitySummary,
-    Coverage,
     DiscoveryOutcome,
     DiscoveryRefreshReport,
     EvidenceVerifier,
@@ -557,19 +580,17 @@ from federlet import (
     Membership,
     MembersResponse,
     MembershipTable,
-    MissingCapabilitySummaryEndpointError,
     MissingRevocationsEndpointError,
     NonceCache,
+    OperationItem,
+    OperationRequest,
+    OperationResponse,
+    PayloadProvenance,
     PeerHealthProbeResult,
     PeerState,
     ProtocolResponse,
     PublicKey,
-    QueryCriteria,
-    QueryRequest,
-    QueryResponse,
     RateLimiter,
-    ResultRef,
-    ResultProvenance,
     RevocationNotice,
     RevocationsResponse,
     ResponseSignatureError,
@@ -583,6 +604,7 @@ from federlet import (
     admit_manifest,
     apply_revocation_notice,
     bootstrap_from_seeds,
+    build_operation_item,
     build_signed_manifest,
     b64u_decode,
     b64u_encode,
@@ -601,19 +623,19 @@ from federlet import (
     refresh_peer_manifest,
     sha256_hex,
     sign_dict,
-    sign_capability_summary,
     sign_introduce_response,
     sign_manifest,
     sign_members_response,
     sign_model,
-    sign_query_response,
+    sign_operation_item,
+    sign_operation_payload,
+    sign_operation_response,
     sign_revocations_response,
-    sign_result,
     verify_dict,
     verify_manifest,
     verify_model,
+    verify_operation_item,
     verify_peer_request,
-    verify_result,
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,

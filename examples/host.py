@@ -249,8 +249,8 @@ class HostServer(AbstractContextManager["HostServer"]):
 
 
 async def main() -> None:
-    org_a = ExampleNode(node_id="dir:org-a:prod", org_id="org-a")
-    org_b = ExampleNode(node_id="dir:org-b:prod", org_id="org-b")
+    org_a = ExampleNode(node_id="node:org-a:prod", org_id="org-a")
+    org_b = ExampleNode(node_id="node:org-b:prod", org_id="org-b")
     with HostServer(org_a), HostServer(org_b):
         assert org_a.manifest is not None
         assert org_b.manifest is not None

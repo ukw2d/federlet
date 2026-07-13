@@ -9,7 +9,7 @@ from .models import (
     MembersResponse,
     RevocationsResponse,
 )
-from .query import QueryResponse
+from .operations import OperationResponse
 from .signing import sign_model
 
 
@@ -37,9 +37,9 @@ def sign_revocations_response(
     return sign_model(response, key, key_id)
 
 
-def sign_query_response(
-    response: QueryResponse,
+def sign_operation_response(
+    response: OperationResponse,
     key: Ed25519PrivateKey,
     key_id: str,
-) -> QueryResponse:
+) -> OperationResponse:
     return sign_model(response, key, key_id)

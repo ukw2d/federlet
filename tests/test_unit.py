@@ -13,7 +13,6 @@ from federlet import (
     SIGNATURE_HEADER,
     AdmissionEvidence,
     AdmissionPolicy,
-    CapabilitySummary,
     Disclosure,
     DisclosurePolicy,
     DiscoveryRefreshReport,
@@ -34,19 +33,17 @@ from federlet import (
     MembershipStore,
     MembershipTable,
     MembersResponse,
-    MissingCapabilitySummaryEndpointError,
     MissingRevocationsEndpointError,
+    OperationItem,
+    OperationRequest,
+    OperationResponse,
+    PayloadProvenance,
     PeerHealthProbeResult,
     PeerState,
     ProtocolResponse,
     PublicKey,
-    QueryCriteria,
-    QueryRequest,
-    QueryResponse,
     RateLimiter,
     ResponseSignatureError,
-    ResultProvenance,
-    ResultRef,
     RevocationNotice,
     RevocationsResponse,
     TokenBucketRateLimiter,
@@ -57,6 +54,7 @@ from federlet import (
     audit_record,
     b64u_decode,
     b64u_encode,
+    build_operation_item,
     build_signed_manifest,
     build_signed_request,
     canonical_bytes,
@@ -72,19 +70,18 @@ from federlet import (
     refresh_discovered_members,
     refresh_peer_manifest,
     sha256_hex,
-    sign_capability_summary,
     sign_introduce_response,
     sign_manifest,
     sign_members_response,
     sign_model,
-    sign_query_response,
-    sign_result,
+    sign_operation_item,
+    sign_operation_payload,
+    sign_operation_response,
     sign_revocations_response,
     verify_manifest,
-    verify_model,
+    verify_operation_item,
     verify_peer_request,
     verify_response_signature,
-    verify_result,
     verify_revocation_notice,
     verify_signed_request,
 )
@@ -122,10 +119,10 @@ class RecordingNonceCache:
 
 def _manifest(key, key_id="k1", **extra) -> Manifest:
     data = {
-        "node_id": "dir:org-a:prod",
+        "node_id": "node:org-a:prod",
         "org_id": "org-a",
         "federations": ["f"],
-        "endpoint": "https://dir.org-a.example/federation/v1",
+        "endpoint": "https://node.org-a.example/federation/v1",
         "revision": 12,
         "public_keys": [PublicKey(key_id=key_id, public_jwk=public_jwk(key))],
         "membership": Membership(
@@ -166,23 +163,32 @@ def test_build_signed_manifest_builds_standard_verifiable_manifest():
     manifest = build_signed_manifest(
         key,
         "org-a-k1",
-        node_id="dir:org-a:prod",
+        node_id="node:org-a:prod",
         org_id="org-a",
-        endpoint="https://dir.org-a.example/federation/v1/",
-        federations=["supplier-network-prod"],
+        endpoint="https://node.org-a.example/federation/v1/",
+        federations=["example-federation-prod"],
         protocol_versions=["example-federation/1"],
-        capability_summary_url="https://dir.org-a.example/federation/v1/capability",
-        limits=ManifestLimits(max_query_rps_per_peer=3),
+        extensions={
+            "example": {
+                "profile_url": "https://node.org-a.example/federation/v1/profile"
+            }
+        },
+        limits=ManifestLimits(max_operation_rps_per_peer=3),
         issued_at=issued,
         ttl=timedelta(days=2),
     )
 
-    assert manifest.endpoint == "https://dir.org-a.example/federation/v1"
+    assert manifest.endpoint == "https://node.org-a.example/federation/v1"
     assert (
         manifest.membership.introduce_url
-        == "https://dir.org-a.example/federation/v1/members/introduce"
+        == "https://node.org-a.example/federation/v1/members/introduce"
     )
     assert manifest.membership.members_url.endswith("/members")
+    assert manifest.extensions == {
+        "example": {
+            "profile_url": "https://node.org-a.example/federation/v1/profile"
+        }
+    }
     assert manifest.expires_at == issued + timedelta(days=2)
     assert manifest.signature is not None
     assert verify_manifest(manifest)
@@ -203,16 +209,21 @@ def test_manifest_membership_round_trips_as_typed_model():
     assert Manifest.model_validate(wire).membership == m.membership
 
 
-def test_manifest_optional_disclosure_limits_and_capability_summary_round_trip():
+def test_manifest_optional_disclosure_limits_and_extensions_round_trip():
     key = generate_key()
     m = _manifest(
         key,
-        capability_summary_url="https://x/capability-summary",
+        extensions={
+            "example": {
+                "operations_url": "https://x/operations",
+                "schema_url": "https://x/schema.json",
+            }
+        },
         disclosure={"default": "federation", "supports_partner_scopes": True},
         limits={
-            "max_query_rps_per_peer": 3,
-            "max_query_timeout_ms": 500,
-            "max_results": 25,
+            "max_operation_rps_per_peer": 3,
+            "max_operation_timeout_ms": 500,
+            "max_operation_items": 25,
         },
     )
     assert isinstance(m.disclosure, Disclosure)
@@ -220,15 +231,20 @@ def test_manifest_optional_disclosure_limits_and_capability_summary_round_trip()
     assert verify_manifest(m)
 
     wire = m.model_dump(mode="json")
-    assert wire["capability_summary_url"] == "https://x/capability-summary"
+    assert wire["extensions"] == {
+        "example": {
+            "operations_url": "https://x/operations",
+            "schema_url": "https://x/schema.json",
+        }
+    }
     assert wire["disclosure"] == {
         "default": "federation",
         "supports_partner_scopes": True,
     }
     assert wire["limits"] == {
-        "max_query_rps_per_peer": 3,
-        "max_query_timeout_ms": 500,
-        "max_results": 25,
+        "max_operation_rps_per_peer": 3,
+        "max_operation_timeout_ms": 500,
+        "max_operation_items": 25,
     }
     assert verify_manifest(Manifest.model_validate(wire))
 
@@ -237,9 +253,10 @@ def test_manifest_extension_fields_remain_optional():
     key = generate_key()
     m = _manifest(key)
     wire = m.model_dump(mode="json")
-    assert wire["capability_summary_url"] is None
+    assert wire["extensions"] == {}
     assert wire["disclosure"] is None
     assert wire["limits"] is None
+    assert Manifest.model_validate(wire).extensions == {}
     assert Manifest.model_validate(wire).disclosure is None
     assert Manifest.model_validate(wire).limits is None
 
@@ -247,9 +264,9 @@ def test_manifest_extension_fields_remain_optional():
 def test_manifest_missing_membership_key_raises_validation_error():
     key = generate_key()
     data = {
-        "node_id": "dir:org-a:prod",
+        "node_id": "node:org-a:prod",
         "org_id": "org-a",
-        "endpoint": "https://dir.org-a.example/federation/v1",
+        "endpoint": "https://node.org-a.example/federation/v1",
         "public_keys": [PublicKey(key_id="k1", public_jwk=public_jwk(key))],
         "membership": {"introduce_url": "https://x/i"},  # missing members_url
     }
@@ -360,9 +377,9 @@ async def test_admission_policy_accepts_valid_manifest():
     now = datetime.now(UTC)
     manifest = _manifest(
         key,
-        federations=["supplier-network-prod"],
+        federations=["example-federation-prod"],
         protocol_versions=["example-federation/1"],
-        endpoint="https://dir.org-a.example/federation/v1",
+        endpoint="https://node.org-a.example/federation/v1",
         auth_methods=["signed_http"],
         admission_evidence={"type": "domain_proof", "domain": "org-a.example"},
         issued_at=_iso(now - timedelta(minutes=1)),
@@ -371,7 +388,7 @@ async def test_admission_policy_accepts_valid_manifest():
     decision = await admit_manifest(
         manifest,
         AdmissionPolicy(
-            federation_id="supplier-network-prod",
+            federation_id="example-federation-prod",
             protocol_versions={"example-federation/1"},
             evidence_verifier=domain_evidence_verifier,
         ),
@@ -386,7 +403,7 @@ async def test_admission_policy_accepts_valid_manifest():
         ({"federations": ["other"]}, "wrong_federation"),
         ({"protocol_versions": ["unknown/1"]}, "unsupported_protocol"),
         ({"auth_methods": ["mtls"]}, "signed_http_required"),
-        ({"endpoint": "http://dir.org-a.example/federation/v1"}, "https_required"),
+        ({"endpoint": "http://node.org-a.example/federation/v1"}, "https_required"),
         ({"endpoint": "https://127.0.0.1/federation/v1"}, "private_endpoint_denied"),
     ],
 )
@@ -394,7 +411,7 @@ async def test_admission_policy_rejects_bad_claims(extra, reason):
     key = generate_key()
     now = datetime.now(UTC)
     claims = {
-        "federations": ["supplier-network-prod"],
+        "federations": ["example-federation-prod"],
         "protocol_versions": ["example-federation/1"],
         "auth_methods": ["signed_http"],
         "issued_at": _iso(now - timedelta(minutes=1)),
@@ -404,7 +421,7 @@ async def test_admission_policy_rejects_bad_claims(extra, reason):
     decision = await admit_manifest(
         manifest,
         AdmissionPolicy(
-            federation_id="supplier-network-prod",
+            federation_id="example-federation-prod",
             protocol_versions={"example-federation/1"},
         ),
     )
@@ -416,11 +433,11 @@ async def test_admission_policy_requires_expiry_by_default():
     key = generate_key()
     manifest = _manifest(
         key,
-        federations=["supplier-network-prod"],
+        federations=["example-federation-prod"],
         protocol_versions=["example-federation/1"],
     )
     policy = AdmissionPolicy(
-        federation_id="supplier-network-prod",
+        federation_id="example-federation-prod",
         protocol_versions={"example-federation/1"},
     )
     assert (await admit_manifest(manifest, policy)).reason == "missing_expires_at"
@@ -430,7 +447,7 @@ async def test_domain_evidence_verifier_rejects_endpoint_outside_domain():
     key = generate_key()
     manifest = _manifest(
         key,
-        endpoint="https://dir.evil.example/federation/v1",
+        endpoint="https://node.evil.example/federation/v1",
         admission_evidence={"type": "domain_proof", "domain": "org-a.example"},
     )
     assert await domain_evidence_verifier(manifest) == (False, "domain_mismatch")
@@ -539,105 +556,99 @@ def test_verify_response_signature_accepts_peer_signed_response():
     )
 
 
-def test_query_request_round_trips_host_owned_query_shape():
-    req = QueryRequest(
-        query_id="q-123",
-        query=QueryCriteria(
-            text="record that matches a host-specific intent",
-            filters={
-                "topic": ["finance"],
-                "operation": ["invoice.reconcile"],
-                "record_type": "workflow",
-            },
-            locale="en-US",
-        ),
-        requested_fields=[
-            "record_id",
-            "title",
-            "description",
-            "facets",
-        ],
-        limit=20,
-        timeout_ms=2000,
-        disclosure_context={
-            "requester_org": "org-a",
-            "purpose": "procurement-workflow",
+def test_operation_request_round_trips_host_owned_payload_shape():
+    req = OperationRequest(
+        operation_id="op-123",
+        operation="example.lookup",
+        payload={
+            "text": "host-specific intent",
+            "filters": {"topic": ["alpha"], "action": ["lookup"]},
         },
-        routing_hint="local-only",
+        metadata={
+            "requested_fields": ["id", "title"],
+            "limit": 20,
+            "timeout_ms": 2000,
+            "routing_hint": "local-only",
+        },
     )
 
     wire = req.model_dump(mode="json", exclude_none=True)
-    assert wire["query"]["locale"] == "en-US"
-    assert wire["routing_hint"] == "local-only"
-    assert QueryRequest.model_validate(wire) == req
+    assert wire["payload"]["filters"]["topic"] == ["alpha"]
+    assert wire["metadata"]["routing_hint"] == "local-only"
+    assert OperationRequest.model_validate(wire) == req
 
 
-@pytest.mark.parametrize("field,value", [("limit", 0), ("timeout_ms", 0)])
-def test_query_request_rejects_non_positive_limits(field, value):
+def test_operation_request_rejects_top_level_host_semantics():
     with pytest.raises(ValidationError):
-        QueryRequest(
-            query_id="q-123",
-            query=QueryCriteria(filters={"topic": ["finance"]}),
-            **{field: value},
+        OperationRequest(
+            operation_id="op-123",
+            operation="example.lookup",
+            requested_fields=["id"],
         )
 
 
-def test_result_ref_sign_verify_and_tamper_detection():
+def test_operation_item_sign_verify_and_tamper_detection():
     key = generate_key()
-    owner = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
-    result = ResultRef(
-        record_id="record:org-c:invoice-tool",
-        revision=17,
-        fetch_url=(
-            "https://node.org-c.example/federation/v1/records/record:org-c:invoice-tool"
-        ),
-        attributes={
-            "record_type": "tool",
-            "display_name": "Invoice Reconciliation Tool",
-            "description": "Reconciles supplier invoices against purchase orders.",
-            "facets": {"topic": ["finance"], "action": ["invoice.reconcile"]},
+    owner = _manifest(key, node_id="node:org-c:prod", org_id="org-c")
+    item = OperationItem(
+        payload={
+            "id": "item:org-c:example",
+            "revision": 17,
+            "title": "Example payload",
+            "facets": {"topic": ["alpha"], "action": ["lookup"]},
         },
-        provenance=ResultProvenance(
+        provenance=PayloadProvenance(
             node_id=owner.node_id,
-            content_hash=sha256_hex(b"canonical record bytes"),
+            content_hash=sha256_hex(b"canonical payload bytes"),
         ),
     )
 
-    signed = sign_result(result, key, "k1")
+    signed = sign_operation_item(item, key, "k1")
 
     assert signed.signature is not None
-    assert verify_result(owner, signed)
-    assert not verify_result(
+    assert verify_operation_item(owner, signed)
+    assert not verify_operation_item(
         owner,
         signed.model_copy(
             update={
-                "attributes": {
-                    **signed.attributes,
-                    "display_name": "Tampered",
+                "payload": {
+                    **signed.payload,
+                    "title": "Tampered",
                 }
             }
         ),
     )
-    assert not verify_result(owner, signed.model_copy(update={"signature": None}))
-
-
-def test_result_ref_rejects_wrong_owner_or_unknown_key():
-    key = generate_key()
-    owner = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
-    signed = sign_result(
-        ResultRef(
-            record_id="record:org-c:invoice-tool",
-            fetch_url="https://node.org-c.example/federation/v1/records/a",
-            provenance=ResultProvenance(
-                node_id=owner.node_id,
-                content_hash=sha256_hex(b"record"),
-            ),
-        ),
-        key,
-        "k1",
+    assert not verify_operation_item(
+        owner, signed.model_copy(update={"signature": None})
     )
 
-    wrong_owner = owner.model_copy(update={"node_id": "dir:other:prod"})
+
+def test_operation_item_rejects_top_level_host_semantics():
+    with pytest.raises(ValidationError):
+        OperationItem(
+            item_id="item:org-c:example",
+            payload={},
+            provenance=PayloadProvenance(
+                node_id="node:org-c:prod",
+                content_hash=sha256_hex(b"payload"),
+            ),
+        )
+
+
+def test_operation_item_rejects_wrong_owner_or_unknown_key():
+    key = generate_key()
+    owner = _manifest(key, node_id="node:org-c:prod", org_id="org-c")
+    signed = sign_operation_payload(
+        {"id": "item:org-c:example"},
+        provenance=PayloadProvenance(
+            node_id=owner.node_id,
+            content_hash=sha256_hex(b"payload"),
+        ),
+        key=key,
+        key_id="k1",
+    )
+
+    wrong_owner = owner.model_copy(update={"node_id": "node:other:prod"})
     unknown_key_owner = _manifest(
         generate_key(),
         key_id="other-k1",
@@ -645,40 +656,45 @@ def test_result_ref_rejects_wrong_owner_or_unknown_key():
         org_id=owner.org_id,
     )
 
-    assert not verify_result(wrong_owner, signed)
-    assert not verify_result(unknown_key_owner, signed)
+    assert not verify_operation_item(wrong_owner, signed)
+    assert not verify_operation_item(unknown_key_owner, signed)
 
 
-def test_query_response_round_trips_signed_cards_and_response_signature():
+def test_operation_response_round_trips_signed_items_and_response_signature():
     key = generate_key()
-    peer = _manifest(key, node_id="dir:org-c:prod", org_id="org-c")
-    signed_result = sign_result(
-        ResultRef(
-            record_id="record:org-c:invoice-tool",
-            fetch_url="https://node.org-c.example/federation/v1/records/a",
-            provenance=ResultProvenance(
-                node_id=peer.node_id,
-                content_hash=sha256_hex(b"record"),
-            ),
+    peer = _manifest(key, node_id="node:org-c:prod", org_id="org-c")
+    signed_item = sign_operation_payload(
+        {"id": "item:org-c:example"},
+        provenance=PayloadProvenance(
+            node_id=peer.node_id,
+            content_hash=sha256_hex(b"payload"),
         ),
-        key,
-        "k1",
+        key=key,
+        key_id="k1",
     )
-    resp = sign_query_response(
-        QueryResponse(
-            query_id="q-123",
+    resp = sign_operation_response(
+        OperationResponse(
+            operation_id="op-123",
             source_node_id=peer.node_id,
-            results=[signed_result],
+            payload={"status": "ok"},
+            items=[signed_item],
+            metadata={"truncated": False},
         ),
         key,
         "k1",
     )
     wire = resp.model_dump(mode="json", exclude_none=True)
-    rt = QueryResponse.model_validate(wire)
+    rt = OperationResponse.model_validate(wire)
 
-    assert rt.coverage.searched_local_catalogue
+    assert rt.metadata["truncated"] is False
     assert verify_response_signature(peer, rt)
-    assert verify_result(peer, rt.results[0])
+    assert verify_operation_item(peer, rt.items[0])
+
+
+def test_build_operation_item_accepts_mapping_payload():
+    item = build_operation_item({"id": "item-1"})
+
+    assert item.payload == {"id": "item-1"}
 
 
 def test_standard_response_signing_helpers_are_verifiable():
@@ -711,8 +727,8 @@ def test_standard_response_signing_helpers_are_verifiable():
     )
     assert verify_response_signature(
         peer,
-        sign_query_response(
-            QueryResponse(query_id="q-123", source_node_id=peer.node_id),
+        sign_operation_response(
+            OperationResponse(operation_id="op-123", source_node_id=peer.node_id),
             key,
             "k1",
         ),
@@ -724,11 +740,11 @@ def test_revocation_notice_round_trips_and_verifies():
     notice = sign_model(
         RevocationNotice(
             federation_id="f",
-            revoked_node_id="dir:org-b:prod",
+            revoked_node_id="node:org-b:prod",
             reason="removed",
             issued_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
             expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=UTC),
-            issuer="dir:org-a:prod",
+            issuer="node:org-a:prod",
         ),
         key,
         "k1",
@@ -740,90 +756,45 @@ def test_revocation_notice_round_trips_and_verifies():
     assert verify_revocation_notice(
         RevocationNotice.model_validate(wire), public_jwk(key)
     )
-    assert RevocationsResponse(source_node_id="dir:org-a:prod", notices=[notice])
-
-
-def test_capability_summary_round_trips_and_verifies():
-    key = generate_key()
-    summary = sign_model(
-        CapabilitySummary(
-            node_id="dir:org-a:prod",
-            summary_version=1,
-            record_types=["supplier"],
-            facets={"industry": ["manufacturing"], "process": ["cnc"]},
-            coverage_text="Supplier catalogue",
-            updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
-            expires_at=datetime(2026, 7, 10, 10, 0, tzinfo=UTC),
-        ),
-        key,
-        "k1",
-    )
-
-    wire = summary.model_dump(mode="json")
-    assert wire["updated_at"] == "2026-07-09T10:00:00Z"
-    assert wire["expires_at"] == "2026-07-10T10:00:00Z"
-    assert CapabilitySummary.model_validate(wire) == summary
-    assert verify_model(summary, public_jwk(key))
-
-
-def test_sign_capability_summary_builds_verifiable_summary():
-    key = generate_key()
-    peer = _manifest(key)
-    summary = sign_capability_summary(
-        key,
-        "k1",
-        node_id=peer.node_id,
-        summary_version=2,
-        record_types=["tool"],
-        facets={"domain": ["finance"], "action": ["invoice.reconcile"]},
-        coverage_text="Finance tools.",
-        updated_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
-        ttl=timedelta(days=3),
-    )
-
-    wire = summary.model_dump(mode="json", exclude_none=True)
-    assert wire["updated_at"] == "2026-07-09T10:00:00Z"
-    assert wire["expires_at"] == "2026-07-12T10:00:00Z"
-    assert summary.signature is not None
-    assert verify_response_signature(peer, summary)
+    assert RevocationsResponse(source_node_id="node:org-a:prod", notices=[notice])
 
 
 def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
     limiter: RateLimiter = TokenBucketRateLimiter(
         {
-            "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
+            "node:org-a:prod": ManifestLimits(max_operation_rps_per_peer=2),
         }
     )
 
-    assert limiter.allow("dir:org-a:prod", now=0.0)
-    assert limiter.allow("dir:org-a:prod", now=0.0)
-    assert not limiter.allow("dir:org-a:prod", now=0.0)
+    assert limiter.allow("node:org-a:prod", now=0.0)
+    assert limiter.allow("node:org-a:prod", now=0.0)
+    assert not limiter.allow("node:org-a:prod", now=0.0)
 
 
 def test_token_bucket_rate_limiter_refills_over_time():
     limiter = TokenBucketRateLimiter(
         {
-            "dir:org-a:prod": ManifestLimits(max_query_rps_per_peer=2),
+            "node:org-a:prod": ManifestLimits(max_operation_rps_per_peer=2),
         }
     )
 
-    assert limiter.allow("dir:org-a:prod", now=0.0)
-    assert limiter.allow("dir:org-a:prod", now=0.0)
-    assert not limiter.allow("dir:org-a:prod", now=0.25)
-    assert limiter.allow("dir:org-a:prod", now=0.5)
-    assert not limiter.allow("dir:org-a:prod", now=0.5)
+    assert limiter.allow("node:org-a:prod", now=0.0)
+    assert limiter.allow("node:org-a:prod", now=0.0)
+    assert not limiter.allow("node:org-a:prod", now=0.25)
+    assert limiter.allow("node:org-a:prod", now=0.5)
+    assert not limiter.allow("node:org-a:prod", now=0.5)
 
 
 def test_token_bucket_rate_limiter_treats_missing_limit_as_unbounded():
     limiter = TokenBucketRateLimiter(
         {
-            "dir:org-a:prod": ManifestLimits(),
+            "node:org-a:prod": ManifestLimits(),
         }
     )
 
     assert limiter.allow("unknown", now=0.0)
-    assert limiter.allow("dir:org-a:prod", now=0.0)
-    assert limiter.allow("dir:org-a:prod", now=0.0)
+    assert limiter.allow("node:org-a:prod", now=0.0)
+    assert limiter.allow("node:org-a:prod", now=0.0)
 
 
 async def test_signed_request_roundtrip_and_replay(cache):
@@ -836,7 +807,7 @@ async def test_signed_request_roundtrip_and_replay(cache):
         source_node_id="a",
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
     )
     first = await verify_signed_request(
@@ -844,7 +815,7 @@ async def test_signed_request_roundtrip_and_replay(cache):
         jwk,
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
         cache=cache,
     )
@@ -855,7 +826,7 @@ async def test_signed_request_roundtrip_and_replay(cache):
         jwk,
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
         cache=cache,
     )
@@ -872,7 +843,7 @@ async def test_signed_request_body_size_limit_passes_under_limit(cache):
         source_node_id="a",
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
     )
 
@@ -882,7 +853,7 @@ async def test_signed_request_body_size_limit_passes_under_limit(cache):
         public_jwk(key),
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
         max_body_bytes=len(body),
         cache=cache,
@@ -899,7 +870,7 @@ async def test_signed_request_body_size_limit_rejects_without_burning_nonce(cach
         source_node_id="a",
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
     )
 
@@ -909,7 +880,7 @@ async def test_signed_request_body_size_limit_rejects_without_burning_nonce(cach
         public_jwk(key),
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
         max_body_bytes=len(body) - 1,
         cache=cache,
@@ -921,7 +892,7 @@ async def test_signed_request_body_size_limit_rejects_without_burning_nonce(cach
         public_jwk(key),
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
         cache=cache,
     )
@@ -933,11 +904,11 @@ async def test_replay_cache_key_is_scoped_to_request_context():
     env = build_signed_request(
         key,
         "k1",
-        federation_id="supplier-network-prod",
-        source_node_id="dir:org-a:prod",
-        target_node_id="dir:org-b:prod",
+        federation_id="example-federation-prod",
+        source_node_id="node:org-a:prod",
+        target_node_id="node:org-b:prod",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
     )
     cache = RecordingNonceCache()
@@ -945,9 +916,9 @@ async def test_replay_cache_key_is_scoped_to_request_context():
     result = await verify_signed_request(
         env,
         public_jwk(key),
-        self_node_id="dir:org-b:prod",
+        self_node_id="node:org-b:prod",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
         max_skew_seconds=120,
         cache=cache,
@@ -956,7 +927,7 @@ async def test_replay_cache_key_is_scoped_to_request_context():
     assert result == (True, "ok")
     assert cache.calls == [
         (
-            f"federlet:nonce:supplier-network-prod:dir:org-a:prod:dir:org-b:prod:{env.nonce}",
+            f"federlet:nonce:example-federation-prod:node:org-a:prod:node:org-b:prod:{env.nonce}",
             1,
             120,
             False,
@@ -975,7 +946,7 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
         source_node_id="a",
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
     )
     forged = env.model_copy(update={"nonce": env.nonce})  # same nonce, wrong key below
@@ -984,7 +955,7 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
         public_jwk(attacker),
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
         cache=cache,
     )
@@ -995,7 +966,7 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
         public_jwk(key),
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
         cache=cache,
     )
@@ -1006,14 +977,19 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
     "kwargs,reason",
     [
         (
-            {"self_node_id": "b", "method": "POST", "path": "/query", "body": b"{}"},
+            {
+                "self_node_id": "b",
+                "method": "POST",
+                "path": "/operations",
+                "body": b"{}",
+            },
             "body_mismatch",
         ),
         (
             {
                 "self_node_id": "wrong",
                 "method": "POST",
-                "path": "/query",
+                "path": "/operations",
                 "body": b'{"x":1}',
             },
             "wrong_target",
@@ -1022,7 +998,7 @@ async def test_bad_signature_does_not_burn_the_nonce(cache):
             {
                 "self_node_id": "b",
                 "method": "GET",
-                "path": "/query",
+                "path": "/operations",
                 "body": b'{"x":1}',
             },
             "method_mismatch",
@@ -1047,7 +1023,7 @@ async def test_signed_request_rejections(kwargs, reason):
         source_node_id="a",
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
     )
     ok, why = await verify_signed_request(env, public_jwk(key), **kwargs)
@@ -1063,7 +1039,7 @@ async def test_method_path_mismatch_does_not_burn_nonce(cache):
         source_node_id="a",
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
     )
 
@@ -1083,7 +1059,7 @@ async def test_method_path_mismatch_does_not_burn_nonce(cache):
         public_jwk(key),
         self_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b'{"x":1}',
         cache=cache,
     )
@@ -1099,9 +1075,9 @@ async def test_verify_peer_request_returns_authenticated_identity(cache):
         "k1",
         federation_id="f",
         source_node_id=peer.node_id,
-        target_node_id="dir:org-b:prod",
+        target_node_id="node:org-b:prod",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
         source_manifest_revision=peer.revision,
     )
@@ -1109,9 +1085,9 @@ async def test_verify_peer_request_returns_authenticated_identity(cache):
     verified = await verify_peer_request(
         signature_header=env.model_dump_json(exclude_none=True),
         peer_manifest=peer,
-        self_node_id="dir:org-b:prod",
+        self_node_id="node:org-b:prod",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
         cache=cache,
     )
@@ -1130,13 +1106,13 @@ async def test_verify_peer_request_authenticates_introduction_from_embedded_mani
     newcomer_key = generate_key()
     newcomer = _manifest(
         newcomer_key,
-        node_id="dir:org-c:prod",
+        node_id="node:org-c:prod",
         org_id="org-c",
-        endpoint="https://dir.org-c.example/federation/v1",
+        endpoint="https://node.org-c.example/federation/v1",
     )
     intro = IntroduceRequest(
         federation_id="f",
-        manifest_url="https://dir.org-c.example/manifest.json",
+        manifest_url="https://node.org-c.example/manifest.json",
         manifest=newcomer,
         nonce="intro-nonce",
         timestamp=datetime.now(UTC),
@@ -1147,7 +1123,7 @@ async def test_verify_peer_request_authenticates_introduction_from_embedded_mani
         "k1",
         federation_id="f",
         source_node_id=newcomer.node_id,
-        target_node_id="dir:org-a:prod",
+        target_node_id="node:org-a:prod",
         method="POST",
         path="/federation/v1/members/introduce",
         body=body,
@@ -1157,7 +1133,7 @@ async def test_verify_peer_request_authenticates_introduction_from_embedded_mani
     verified = await verify_peer_request(
         signature_header=env.model_dump_json(exclude_none=True),
         peer_manifest=intro.manifest,
-        self_node_id="dir:org-a:prod",
+        self_node_id="node:org-a:prod",
         method="POST",
         path="/federation/v1/members/introduce",
         body=body,
@@ -1186,7 +1162,7 @@ async def test_verify_peer_request_rejects_malformed_headers(
             peer_manifest=_manifest(generate_key()),
             self_node_id="b",
             method="POST",
-            path="/query",
+            path="/operations",
             body=b"{}",
         )
 
@@ -1198,7 +1174,7 @@ async def test_verify_peer_request_rejects_malformed_headers(
     [
         ({"signature": None}, {}, "unsigned"),
         ({"target_node_id": "wrong"}, {}, "wrong_target"),
-        ({}, {"node_id": "dir:other:prod"}, "source_mismatch"),
+        ({}, {"node_id": "node:other:prod"}, "source_mismatch"),
     ],
 )
 async def test_verify_peer_request_rejects_invalid_envelopes(
@@ -1216,7 +1192,7 @@ async def test_verify_peer_request_rejects_invalid_envelopes(
         source_node_id=peer.node_id,
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=body,
         source_manifest_revision=peer.revision,
     ).model_copy(update=env_update)
@@ -1228,7 +1204,7 @@ async def test_verify_peer_request_rejects_invalid_envelopes(
             peer_manifest=verifier_manifest,
             self_node_id="b",
             method="POST",
-            path="/query",
+            path="/operations",
             body=body,
         )
 
@@ -1246,7 +1222,7 @@ async def test_verify_peer_request_rejects_unknown_key():
         source_node_id=peer.node_id,
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b"{}",
     )
 
@@ -1256,7 +1232,7 @@ async def test_verify_peer_request_rejects_unknown_key():
             peer_manifest=peer,
             self_node_id="b",
             method="POST",
-            path="/query",
+            path="/operations",
             body=b"{}",
         )
 
@@ -1273,7 +1249,7 @@ async def test_verify_peer_request_rejects_replay(cache):
         source_node_id=peer.node_id,
         target_node_id="b",
         method="POST",
-        path="/query",
+        path="/operations",
         body=b"{}",
     )
     header = env.model_dump_json(exclude_none=True)
@@ -1282,7 +1258,7 @@ async def test_verify_peer_request_rejects_replay(cache):
         "peer_manifest": peer,
         "self_node_id": "b",
         "method": "POST",
-        "path": "/query",
+        "path": "/operations",
         "body": b"{}",
         "cache": cache,
     }
@@ -1358,7 +1334,7 @@ async def test_get_revocations_accepts_signed_response():
     notice = sign_model(
         RevocationNotice(
             federation_id="f",
-            revoked_node_id="dir:org-b:prod",
+            revoked_node_id="node:org-b:prod",
             reason="removed",
             issued_at=datetime.now(UTC),
             issuer=peer.node_id,
@@ -1460,120 +1436,6 @@ async def test_get_revocations_requires_advertised_endpoint():
         await client.close()
 
 
-async def test_get_capability_summary_accepts_signed_response():
-    import httpx
-
-    peer_key = generate_key()
-    peer = _manifest(peer_key, capability_summary_url="https://x/capability")
-    signed = sign_model(
-        CapabilitySummary(
-            node_id=peer.node_id,
-            summary_version=1,
-            record_types=["supplier"],
-            facets={"industry": ["manufacturing"], "process": ["cnc"]},
-            coverage_text="Supplier catalogue",
-            updated_at=datetime.now(UTC),
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-        peer_key,
-        "k1",
-    )
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/capability"
-        return httpx.Response(
-            200, json=signed.model_dump(mode="json", exclude_none=True)
-        )
-
-    client = FederationClient(
-        node_id="caller",
-        federation_id="f",
-        key=generate_key(),
-        key_id="caller-k1",
-        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-    )
-    try:
-        assert await client.get_capability_summary(peer) == signed
-    finally:
-        await client.close()
-
-
-@pytest.mark.parametrize(
-    "response_factory",
-    [
-        lambda peer, _: CapabilitySummary(
-            node_id=peer.node_id,
-            summary_version=1,
-            coverage_text="Supplier catalogue",
-            updated_at=datetime.now(UTC),
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-        ),
-        lambda peer, bad_key: sign_model(
-            CapabilitySummary(
-                node_id=peer.node_id,
-                summary_version=1,
-                coverage_text="Supplier catalogue",
-                updated_at=datetime.now(UTC),
-                expires_at=datetime.now(UTC) + timedelta(hours=1),
-            ),
-            bad_key,
-            "k1",
-        ),
-    ],
-)
-async def test_get_capability_summary_rejects_unsigned_or_bad_response(
-    response_factory,
-):
-    import httpx
-
-    peer_key = generate_key()
-    peer = _manifest(peer_key, capability_summary_url="https://x/capability")
-    response = response_factory(peer, generate_key())
-
-    async def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, json=response.model_dump(mode="json", exclude_none=True)
-        )
-
-    client = FederationClient(
-        node_id="caller",
-        federation_id="f",
-        key=generate_key(),
-        key_id="caller-k1",
-        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-    )
-    try:
-        with pytest.raises(ResponseSignatureError):
-            await client.get_capability_summary(peer)
-    finally:
-        await client.close()
-
-
-async def test_get_capability_summary_requires_advertised_endpoint():
-    import httpx
-
-    peer = _manifest(generate_key())
-
-    async def handler(_: httpx.Request) -> httpx.Response:
-        raise AssertionError("request should not be sent")
-
-    client = FederationClient(
-        node_id="caller",
-        federation_id="f",
-        key=generate_key(),
-        key_id="caller-k1",
-        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-    )
-    try:
-        with pytest.raises(
-            MissingCapabilitySummaryEndpointError,
-            match="missing_capability_summary_url",
-        ):
-            await client.get_capability_summary(peer)
-    finally:
-        await client.close()
-
-
 async def test_get_protocol_returns_parsed_response():
     import httpx
 
@@ -1584,7 +1446,7 @@ async def test_get_protocol_returns_parsed_response():
         "manifest_revision": peer.revision,
         "protocol_versions": ["example-federation/1"],
         "auth_methods": ["signed_http"],
-        "limits": {"max_query_timeout_ms": 500},
+        "limits": {"max_operation_timeout_ms": 500},
         "extra": "host-owned",
     }
 
@@ -1611,7 +1473,7 @@ async def test_get_protocol_returns_parsed_response():
     assert resp.protocol_versions == ["example-federation/1"]
     assert resp.auth_methods == ["signed_http"]
     assert resp.limits is not None
-    assert resp.limits.max_query_timeout_ms == 500
+    assert resp.limits.max_operation_timeout_ms == 500
     assert resp.model_extra == {"extra": "host-owned"}
 
 
@@ -2128,7 +1990,7 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
     seed = _discoverable_manifest(
         seed_key,
         "seed-k1",
-        node_id="dir:seed:prod",
+        node_id="node:seed:prod",
         org_id="seed",
         membership=Membership(
             introduce_url="http://127.0.0.1/seed/i",
@@ -2138,7 +2000,7 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
     discovered = _discoverable_manifest(
         new_key,
         "new-k1",
-        node_id="dir:new:prod",
+        node_id="node:new:prod",
         org_id="new",
         endpoint="https://new.example/federation/v1",
     )
@@ -2209,7 +2071,7 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
     seed = _discoverable_manifest(
         seed_key,
         "seed-k1",
-        node_id="dir:seed:prod",
+        node_id="node:seed:prod",
         membership=Membership(
             introduce_url="http://127.0.0.1/seed/i",
             members_url="http://127.0.0.1/seed/members",
@@ -2218,7 +2080,7 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
     rejected_manifest = _discoverable_manifest(
         new_key,
         "new-k1",
-        node_id="dir:rejected:prod",
+        node_id="node:rejected:prod",
         federations=["other"],
     )
     members = sign_model(
@@ -2281,7 +2143,7 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
     seed = _discoverable_manifest(
         seed_key,
         "seed-k1",
-        node_id="dir:seed:prod",
+        node_id="node:seed:prod",
         membership=Membership(
             introduce_url="http://127.0.0.1/seed/i",
             members_url="http://127.0.0.1/seed/members",
@@ -2290,7 +2152,7 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
     duplicate_manifest = _discoverable_manifest(
         new_key,
         "dup-k1",
-        node_id="dir:dup:prod",
+        node_id="node:dup:prod",
         federations=["other"],
     )
     members = sign_model(
@@ -2364,13 +2226,13 @@ async def test_refresh_discovered_members_enforces_per_peer_cap():
 
     seed_key = generate_key()
     manifests = [
-        _discoverable_manifest(generate_key(), f"k{i}", node_id=f"dir:new-{i}:prod")
+        _discoverable_manifest(generate_key(), f"k{i}", node_id=f"node:new-{i}:prod")
         for i in range(3)
     ]
     seed = _discoverable_manifest(
         seed_key,
         "seed-k1",
-        node_id="dir:seed:prod",
+        node_id="node:seed:prod",
         membership=Membership(
             introduce_url="http://127.0.0.1/seed/i",
             members_url="http://127.0.0.1/seed/members",
@@ -2440,7 +2302,7 @@ async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
     seed = _discoverable_manifest(
         seed_key,
         "seed-k1",
-        node_id="dir:seed:prod",
+        node_id="node:seed:prod",
         membership=Membership(
             introduce_url="https://seed.example/i",
             members_url="https://seed.example/members",
@@ -2451,7 +2313,7 @@ async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
             source_node_id=seed.node_id,
             members=[
                 MemberRef(
-                    node_id="dir:private:prod",
+                    node_id="node:private:prod",
                     manifest_url="http://127.0.0.1/private.json",
                 )
             ],
@@ -2492,7 +2354,7 @@ async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
 
     assert not report.accepted
     assert [(o.node_id, o.reason) for o in report.failed] == [
-        ("dir:private:prod", "ssrf_rejected")
+        ("node:private:prod", "ssrf_rejected")
     ]
 
 
@@ -2503,19 +2365,19 @@ async def test_refresh_discovered_members_skips_node_id_mismatch():
     seed = _discoverable_manifest(
         seed_key,
         "seed-k1",
-        node_id="dir:seed:prod",
+        node_id="node:seed:prod",
         membership=Membership(
             introduce_url="http://127.0.0.1/seed/i",
             members_url="http://127.0.0.1/seed/members",
         ),
     )
-    other = _discoverable_manifest(other_key, "other-k1", node_id="dir:other:prod")
+    other = _discoverable_manifest(other_key, "other-k1", node_id="node:other:prod")
     members = sign_model(
         MembersResponse(
             source_node_id=seed.node_id,
             members=[
                 MemberRef(
-                    node_id="dir:expected:prod",
+                    node_id="node:expected:prod",
                     manifest_url="http://127.0.0.1/mismatch.json",
                 )
             ],
@@ -2556,20 +2418,20 @@ async def test_refresh_discovered_members_skips_node_id_mismatch():
         await client.close()
 
     assert [(o.node_id, o.reason) for o in report.skipped] == [
-        ("dir:expected:prod", "node_id_mismatch")
+        ("node:expected:prod", "node_id_mismatch")
     ]
-    assert table.get("dir:expected:prod") is None
+    assert table.get("node:expected:prod") is None
 
 
 async def test_refresh_discovered_members_isolates_fetch_failures():
     import httpx
 
     seed_key = generate_key()
-    good = _discoverable_manifest(generate_key(), "good-k1", node_id="dir:good:prod")
+    good = _discoverable_manifest(generate_key(), "good-k1", node_id="node:good:prod")
     seed = _discoverable_manifest(
         seed_key,
         "seed-k1",
-        node_id="dir:seed:prod",
+        node_id="node:seed:prod",
         membership=Membership(
             introduce_url="http://127.0.0.1/seed/i",
             members_url="http://127.0.0.1/seed/members",
@@ -2577,11 +2439,11 @@ async def test_refresh_discovered_members_isolates_fetch_failures():
     )
     refs = [
         MemberRef(
-            node_id="dir:timeout:prod", manifest_url="http://127.0.0.1/timeout.json"
+            node_id="node:timeout:prod", manifest_url="http://127.0.0.1/timeout.json"
         ),
-        MemberRef(node_id="dir:http:prod", manifest_url="http://127.0.0.1/http.json"),
+        MemberRef(node_id="node:http:prod", manifest_url="http://127.0.0.1/http.json"),
         MemberRef(
-            node_id="dir:bad-json:prod", manifest_url="http://127.0.0.1/bad-json.json"
+            node_id="node:bad-json:prod", manifest_url="http://127.0.0.1/bad-json.json"
         ),
         MemberRef(node_id=good.node_id, manifest_url="http://127.0.0.1/good.json"),
     ]
@@ -2629,9 +2491,9 @@ async def test_refresh_discovered_members_isolates_fetch_failures():
         await client.close()
 
     assert [(o.node_id, o.reason) for o in report.failed] == [
-        ("dir:timeout:prod", "timeout"),
-        ("dir:http:prod", "http_error"),
-        ("dir:bad-json:prod", "malformed_manifest"),
+        ("node:timeout:prod", "timeout"),
+        ("node:http:prod", "http_error"),
+        ("node:bad-json:prod", "malformed_manifest"),
     ]
     assert [o.node_id for o in report.accepted] == [good.node_id]
     assert table.get(good.node_id) is not None
@@ -2656,10 +2518,10 @@ def test_tiered_public_api_namespaces_are_importable():
     assert prelude.Manifest is Manifest
     assert prelude.build_signed_manifest is build_signed_manifest
     assert prelude.verify_peer_request is verify_peer_request
-    assert prelude.QueryRequest is QueryRequest
+    assert prelude.OperationItem is OperationItem
+    assert prelude.OperationRequest is OperationRequest
     assert prelude.sign_members_response is sign_members_response
-    assert prelude.sign_result is sign_result
-    assert prelude.sign_capability_summary is sign_capability_summary
+    assert prelude.sign_operation_item is sign_operation_item
 
     assert lowlevel.build_signed_request is build_signed_request
     assert lowlevel.verify_signed_request is verify_signed_request
@@ -2671,8 +2533,8 @@ def test_audit_record_includes_required_shape_and_timestamp():
     record = audit_record(
         event="admission_decision",
         request_id="req-1",
-        source_node_id="dir:org-a:prod",
-        target_node_id="dir:org-b:prod",
+        source_node_id="node:org-a:prod",
+        target_node_id="node:org-b:prod",
         manifest_revision=7,
         decision="accepted",
         reason="ok",
@@ -2681,8 +2543,8 @@ def test_audit_record_includes_required_shape_and_timestamp():
 
     assert record["event"] == "admission_decision"
     assert record["request_id"] == "req-1"
-    assert record["source_node_id"] == "dir:org-a:prod"
-    assert record["target_node_id"] == "dir:org-b:prod"
+    assert record["source_node_id"] == "node:org-a:prod"
+    assert record["target_node_id"] == "node:org-b:prod"
     assert record["manifest_revision"] == 7
     assert record["decision"] == "accepted"
     assert record["reason"] == "ok"
@@ -2693,11 +2555,11 @@ def test_audit_record_includes_required_shape_and_timestamp():
 
 
 def test_audit_record_omits_none_optional_fields():
-    record = audit_record(event="query")
+    record = audit_record(event="operation")
 
-    assert record["event"] == "query"
+    assert record["event"] == "operation"
     assert "request_id" not in record
-    assert "query_id" not in record
+    assert "operation_id" not in record
     assert "decision" not in record
 
 
@@ -2719,35 +2581,35 @@ def test_membership_cooldown_and_recovery():
 
 def test_membership_table_satisfies_membership_store_protocol():
     table = MembershipTable()
-    store: MembershipStore = table
-    assert store is table
+    service: MembershipStore = table
+    assert service is table
 
 
 def test_disclose_members_excludes_ineligible_and_denied_peers():
     active = MemberRecord(
-        node_id="dir:org-a:prod",
+        node_id="node:org-a:prod",
         org_id="org-a",
         manifest_url="https://a.example/manifest.json",
         manifest_revision=2,
     )
     revoked = MemberRecord(
-        node_id="dir:org-b:prod",
+        node_id="node:org-b:prod",
         manifest_url="https://b.example/manifest.json",
         state=PeerState.REVOKED,
     )
     denied = MemberRecord(
-        node_id="dir:org-c:prod",
+        node_id="node:org-c:prod",
         manifest_url="https://c.example/manifest.json",
     )
 
     refs = disclose_members(
         [active, revoked, denied],
-        requester_node_id="dir:requester:prod",
-        policy=DisclosurePolicy(default="federation", denied={"dir:org-c:prod"}),
+        requester_node_id="node:requester:prod",
+        policy=DisclosurePolicy(default="federation", denied={"node:org-c:prod"}),
     )
 
     assert len(refs) == 1
-    assert refs[0].node_id == "dir:org-a:prod"
+    assert refs[0].node_id == "node:org-a:prod"
     assert refs[0].org_id == "org-a"
     assert refs[0].manifest_revision == 2
     assert refs[0].disclosure == "federation"
@@ -2755,16 +2617,16 @@ def test_disclose_members_excludes_ineligible_and_denied_peers():
 
 def test_disclose_members_applies_requester_specific_disclosure():
     rec = MemberRecord(
-        node_id="dir:org-a:prod",
+        node_id="node:org-a:prod",
         manifest_url="https://a.example/manifest.json",
     )
 
     refs = disclose_members(
         [rec],
-        requester_node_id="dir:requester:prod",
+        requester_node_id="node:requester:prod",
         policy=DisclosurePolicy(
             default="federation",
-            requester_disclosure={"dir:requester:prod": "partner"},
+            requester_disclosure={"node:requester:prod": "partner"},
         ),
     )
 
@@ -2783,14 +2645,14 @@ def test_revoked_peer_is_never_eligible():
 def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.admit(MemberRecord(node_id="dir:org-b:prod", manifest_url="https://x/m.json"))
+    table.admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     notice = sign_model(
         RevocationNotice(
             federation_id="f",
-            revoked_node_id="dir:org-b:prod",
+            revoked_node_id="node:org-b:prod",
             reason="removed",
             issued_at=datetime.now(UTC),
-            issuer="dir:org-a:prod",
+            issuer="node:org-a:prod",
         ),
         issuer_key,
         "issuer-k1",
@@ -2804,20 +2666,20 @@ def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
     )
 
     assert state == PeerState.REVOKED
-    assert table.get("dir:org-b:prod").state == PeerState.REVOKED
+    assert table.get("node:org-b:prod").state == PeerState.REVOKED
 
 
 def test_apply_revocation_notice_ignores_untrusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.admit(MemberRecord(node_id="dir:org-b:prod", manifest_url="https://x/m.json"))
+    table.admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     notice = sign_model(
         RevocationNotice(
             federation_id="f",
-            revoked_node_id="dir:org-b:prod",
+            revoked_node_id="node:org-b:prod",
             reason="removed",
             issued_at=datetime.now(UTC),
-            issuer="dir:org-a:prod",
+            issuer="node:org-a:prod",
         ),
         issuer_key,
         "issuer-k1",
@@ -2831,20 +2693,20 @@ def test_apply_revocation_notice_ignores_untrusted_issuer():
     )
 
     assert state == PeerState.ACTIVE
-    assert table.get("dir:org-b:prod").state == PeerState.ACTIVE
+    assert table.get("node:org-b:prod").state == PeerState.ACTIVE
 
 
 def test_apply_revocation_notice_ignores_wrong_federation():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.admit(MemberRecord(node_id="dir:org-b:prod", manifest_url="https://x/m.json"))
+    table.admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     notice = sign_model(
         RevocationNotice(
             federation_id="other",
-            revoked_node_id="dir:org-b:prod",
+            revoked_node_id="node:org-b:prod",
             reason="removed",
             issued_at=datetime.now(UTC),
-            issuer="dir:org-a:prod",
+            issuer="node:org-a:prod",
         ),
         issuer_key,
         "issuer-k1",
@@ -2858,7 +2720,7 @@ def test_apply_revocation_notice_ignores_wrong_federation():
     )
 
     assert state == PeerState.ACTIVE
-    assert table.get("dir:org-b:prod").state == PeerState.ACTIVE
+    assert table.get("node:org-b:prod").state == PeerState.ACTIVE
 
 
 def test_apply_revocation_notice_ignores_unknown_peer():
@@ -2867,10 +2729,10 @@ def test_apply_revocation_notice_ignores_unknown_peer():
     notice = sign_model(
         RevocationNotice(
             federation_id="f",
-            revoked_node_id="dir:unknown:prod",
+            revoked_node_id="node:unknown:prod",
             reason="removed",
             issued_at=datetime.now(UTC),
-            issuer="dir:org-a:prod",
+            issuer="node:org-a:prod",
         ),
         issuer_key,
         "issuer-k1",

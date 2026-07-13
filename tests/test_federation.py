@@ -1,4 +1,4 @@
-"""Integration tests: two federated stores, plus a third joining."""
+"""Integration tests: two federated services, plus a third joining."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from federlet.lowlevel import build_signed_request
 from federlet.signing import sign_dict
 from harness import FederationNode
 
-FED = "supplier-network-prod"
+FED = "example-federation-prod"
 
 log = logging.getLogger("federlet.test")
 
@@ -59,14 +59,14 @@ def _intro_for(newcomer: FederationNode) -> IntroduceRequest:
 
 @pytest.fixture
 def org_a():
-    node = FederationNode("dir:org-a:prod", "org-a", FED).start()
+    node = FederationNode("node:org-a:prod", "org-a", FED).start()
     yield node
     node.stop()
 
 
 @pytest.fixture
 def org_b():
-    node = FederationNode("dir:org-b:prod", "org-b", FED).start()
+    node = FederationNode("node:org-b:prod", "org-b", FED).start()
     yield node
     node.stop()
 
@@ -86,7 +86,7 @@ async def test_two_nodes_exchange_membership(org_a, org_b):
     members = await client.get_members(org_b.manifest)
     learned = {m.node_id for m in members.members}
     log.info("    A learned peers from B: %s", sorted(learned))
-    assert "dir:org-a:prod" in learned
+    assert "node:org-a:prod" in learned
     await client.close()
 
 
@@ -99,23 +99,23 @@ async def test_client_probes_protocol_and_health(org_a, org_b):
     finally:
         await client.close()
 
-    assert protocol.node_id == "dir:org-b:prod"
+    assert protocol.node_id == "node:org-b:prod"
     assert protocol.manifest_revision == org_b.manifest.revision
     assert protocol.protocol_versions == ["example-federation/1"]
     assert protocol.auth_methods == ["signed_http"]
-    assert health.node_id == "dir:org-b:prod"
+    assert health.node_id == "node:org-b:prod"
     assert health.status == "ok"
 
 
 # --- Scenario 2: Org C joins via introduction + membership exchange ------------
 
 
-async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
+async def test_third_service_joins_and_becomes_discoverable(org_a, org_b):
     step("SCENARIO 2: Org C wants to join a network where A and B already federate")
     org_a.seed(org_b)
     org_b.seed(org_a)
 
-    org_c = FederationNode("dir:org-c:prod", "org-c", FED).start()
+    org_c = FederationNode("node:org-c:prod", "org-c", FED).start()
     try:
         c_client = _client(org_c)
 
@@ -137,21 +137,21 @@ async def test_third_store_joins_and_becomes_discoverable(org_a, org_b):
         log.info(
             "    A accepted C: %s | B accepted C: %s", resp_a.accepted, resp_b.accepted
         )
-        assert resp_a.accepted and resp_a.accepted_node_id == "dir:org-c:prod"
+        assert resp_a.accepted and resp_a.accepted_node_id == "node:org-c:prod"
         assert resp_b.accepted
-        assert "dir:org-c:prod" in org_a.peers
+        assert "node:org-c:prod" in org_a.peers
 
         step("Membership exchange: C asks A who else it knows -> learns about B")
         members = await c_client.get_members(a_manifest)
         learned = {m.node_id for m in members.members}
         log.info("    C learned peers from A: %s", sorted(learned))
-        assert "dir:org-b:prod" in learned
+        assert "node:org-b:prod" in learned
 
         step("A's local membership table now includes the newly admitted C")
         a_client = _client(org_a)
         assert {m.node_id for m in org_a.eligible_peer_manifests()} == {
-            "dir:org-b:prod",
-            "dir:org-c:prod",
+            "node:org-b:prod",
+            "node:org-c:prod",
         }
         await a_client.close()
         await c_client.close()
@@ -163,7 +163,7 @@ async def test_seed_bootstrap_helper_fetches_admits_and_introduces(org_a, org_b)
     step("SCENARIO 2b: Org C bootstraps through seed helper")
     org_a.seed(org_b)
     org_b.seed(org_a)
-    org_c = FederationNode("dir:org-c:prod", "org-c", FED).start()
+    org_c = FederationNode("node:org-c:prod", "org-c", FED).start()
     try:
         c_client = _client(org_c)
         report = await bootstrap_from_seeds(
@@ -204,7 +204,7 @@ async def test_stateful_facade_drives_bootstrap_discover_refresh_and_verify(
     step("SCENARIO 2c: stateful facade wraps common host workflows")
     org_a.seed(org_b)
     org_b.seed(org_a)
-    org_c = FederationNode("dir:org-c:prod", "org-c", FED).start()
+    org_c = FederationNode("node:org-c:prod", "org-c", FED).start()
     facade = FederationNodeFacade(
         node_id=org_c.node_id,
         federation_id=FED,
@@ -250,7 +250,7 @@ async def test_stateful_facade_drives_bootstrap_discover_refresh_and_verify(
             source_node_id=org_a.node_id,
             target_node_id=org_c.node_id,
             method="POST",
-            path="/federation/v1/query",
+            path="/federation/v1/operations",
             body=body,
             source_manifest_revision=org_a.manifest.revision,
         )
@@ -258,7 +258,7 @@ async def test_stateful_facade_drives_bootstrap_discover_refresh_and_verify(
             signature_header=envelope.model_dump_json(exclude_none=True),
             source_node_id=org_a.node_id,
             method="POST",
-            path="/federation/v1/query",
+            path="/federation/v1/operations",
             body=body,
         )
         assert verified.source_node_id == org_a.node_id
@@ -286,7 +286,7 @@ async def test_wrong_federation_introduction_is_rejected(org_a):
     step("SCENARIO 3b: an introduction from a DIFFERENT federation must be rejected")
     import httpx
 
-    outsider = FederationNode("dir:evil:prod", "evil", "other-federation")
+    outsider = FederationNode("node:evil:prod", "evil", "other-federation")
     outsider.start()
     try:
         client = FederationClient(

@@ -9,7 +9,6 @@ import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .models import (
-    CapabilitySummary,
     HealthResponse,
     IntroduceRequest,
     IntroduceResponse,
@@ -36,13 +35,9 @@ class MissingRevocationsEndpointError(ValueError):
     """Raised when a peer manifest does not advertise a revocations endpoint."""
 
 
-class MissingCapabilitySummaryEndpointError(ValueError):
-    """Raised when a peer manifest does not advertise a capability summary endpoint."""
-
-
 def _verify_response(
     peer: Manifest,
-    resp: IntroduceResponse | MembersResponse | RevocationsResponse | CapabilitySummary,
+    resp: IntroduceResponse | MembersResponse | RevocationsResponse,
 ) -> bool:
     return verify_response_signature(peer, resp)
 
@@ -155,17 +150,6 @@ class FederationClient:
             peer.node_id, "GET", peer.membership.revocations_url, params=params
         )
         resp = RevocationsResponse.model_validate(r.json())
-        if not _verify_response(peer, resp):
-            raise ResponseSignatureError("bad_signature")
-        return resp
-
-    async def get_capability_summary(self, peer: Manifest) -> CapabilitySummary:
-        if peer.capability_summary_url is None:
-            raise MissingCapabilitySummaryEndpointError(
-                "missing_capability_summary_url"
-            )
-        r = await self._send(peer.node_id, "GET", peer.capability_summary_url)
-        resp = CapabilitySummary.model_validate(r.json())
         if not _verify_response(peer, resp):
             raise ResponseSignatureError("bad_signature")
         return resp

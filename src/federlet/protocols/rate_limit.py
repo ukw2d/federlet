@@ -30,7 +30,7 @@ class TokenBucketRateLimiter:
 
     def allow(self, peer_node_id: str, *, now: float) -> bool:
         limits = self._peer_limits.get(peer_node_id)
-        rate = limits.max_query_rps_per_peer if limits else None
+        rate = limits.max_operation_rps_per_peer if limits else None
         if rate is None:
             return True
         if rate <= 0:

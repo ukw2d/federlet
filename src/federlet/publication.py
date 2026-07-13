@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime, timedelta
+from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -36,7 +37,7 @@ def build_signed_manifest(
     introduce_url: str | None = None,
     members_url: str | None = None,
     revocations_url: str | None = None,
-    capability_summary_url: str | None = None,
+    extensions: dict[str, Any] | None = None,
     admission_evidence: AdmissionEvidence | None = None,
     disclosure: Disclosure | None = None,
     limits: ManifestLimits | None = None,
@@ -73,7 +74,7 @@ def build_signed_manifest(
             members_url=members_url or f"{base}/members",
             revocations_url=revocations_url,
         ),
-        capability_summary_url=capability_summary_url,
+        extensions=extensions or {},
         admission_evidence=admission_evidence,
         disclosure=disclosure,
         limits=limits,
