@@ -185,9 +185,7 @@ def test_build_signed_manifest_builds_standard_verifiable_manifest():
     )
     assert manifest.membership.members_url.endswith("/members")
     assert manifest.extensions == {
-        "example": {
-            "profile_url": "https://node.org-a.example/federation/v1/profile"
-        }
+        "example": {"profile_url": "https://node.org-a.example/federation/v1/profile"}
     }
     assert manifest.expires_at == issued + timedelta(days=2)
     assert manifest.signature is not None
@@ -2645,7 +2643,9 @@ def test_revoked_peer_is_never_eligible():
 def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
+    table.admit(
+        MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json")
+    )
     notice = sign_model(
         RevocationNotice(
             federation_id="f",
@@ -2672,7 +2672,9 @@ def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
 def test_apply_revocation_notice_ignores_untrusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
+    table.admit(
+        MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json")
+    )
     notice = sign_model(
         RevocationNotice(
             federation_id="f",
@@ -2699,7 +2701,9 @@ def test_apply_revocation_notice_ignores_untrusted_issuer():
 def test_apply_revocation_notice_ignores_wrong_federation():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
+    table.admit(
+        MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json")
+    )
     notice = sign_model(
         RevocationNotice(
             federation_id="other",
