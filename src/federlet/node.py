@@ -20,7 +20,13 @@ from .discovery import DiscoveryRefreshReport, refresh_discovered_members
 from .membership import MemberRecord, MembershipTable
 from .models import IntroduceRequest, IntroduceResponse, Manifest
 from .protocols import NonceCache
-from .refresh import ManifestRefreshDecision, refresh_peer_manifest
+from .refresh import (
+    ManifestRefreshDecision,
+    refresh_peer_manifest,
+)
+from .refresh import (
+    refresh_all as refresh_all_manifests,
+)
 from .signing import (
     UnauthorizedPeerRequest,
     VerifiedPeer,
@@ -214,14 +220,7 @@ class FederationNode:
             key_continuity_policy=key_continuity_policy,
             max_skew_seconds=max_skew_seconds,
         )
-        if decision.action in {"accept", "unchanged"} and decision.manifest is not None:
-            self.peer_manifests[node_id] = decision.manifest
-            rec.manifest_revision = decision.manifest.revision
-            self.membership_table.admit(rec)
-        elif decision.action == "quarantine":
-            self.membership_table.mark_stale(node_id)
-        elif decision.action == "reject":
-            self.membership_table.reject(node_id)
+        self._apply_refresh_decision(node_id, decision)
         return decision
 
     async def refresh_all(
@@ -230,13 +229,27 @@ class FederationNode:
         key_continuity_policy: KeyContinuityPolicy | None = None,
         max_skew_seconds: int = 300,
     ) -> dict[str, ManifestRefreshDecision]:
+        targets = []
         decisions: dict[str, ManifestRefreshDecision] = {}
         for rec in list(self.membership_table.eligible_peers()):
-            decisions[rec.node_id] = await self.refresh_peer(
-                rec.node_id,
+            manifest = self.peer_manifests.get(rec.node_id)
+            if manifest is None:
+                decision = ManifestRefreshDecision("reject", "unknown_peer")
+                decisions[rec.node_id] = decision
+                self._apply_refresh_decision(rec.node_id, decision)
+                continue
+            targets.append((manifest, rec.manifest_url))
+
+        decisions.update(
+            await refresh_all_manifests(
+                self.client,
+                targets,
                 key_continuity_policy=key_continuity_policy,
                 max_skew_seconds=max_skew_seconds,
             )
+        )
+        for node_id, decision in decisions.items():
+            self._apply_refresh_decision(node_id, decision)
         return decisions
 
     def select_peers(self, *, now: datetime | None = None) -> list[Manifest]:
@@ -256,3 +269,19 @@ class FederationNode:
                 manifest_revision=manifest.revision,
             )
         )
+
+    def _apply_refresh_decision(
+        self,
+        node_id: str,
+        decision: ManifestRefreshDecision,
+    ) -> None:
+        rec = self.membership_table.get(node_id)
+        if decision.action in {"accept", "unchanged"} and decision.manifest is not None:
+            self.peer_manifests[node_id] = decision.manifest
+            if rec is not None:
+                rec.manifest_revision = decision.manifest.revision
+                self.membership_table.admit(rec)
+        elif decision.action == "quarantine":
+            self.membership_table.mark_stale(node_id)
+        elif decision.action == "reject":
+            self.membership_table.reject(node_id)

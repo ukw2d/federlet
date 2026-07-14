@@ -18,6 +18,7 @@ from .models import (
     RevocationsResponse,
 )
 from .net import _assert_public_host
+from .operations import OperationRequest, OperationResponse
 from .signing import build_signed_request, check_manifest, verify_response_signature
 
 SIGNATURE_HEADER = "X-Federlet-Signature"
@@ -151,6 +152,27 @@ class FederationClient:
         )
         resp = RevocationsResponse.model_validate(r.json())
         if not _verify_response(peer, resp):
+            raise ResponseSignatureError("bad_signature")
+        return resp
+
+    async def send_operation(
+        self,
+        peer: Manifest,
+        request: OperationRequest,
+        *,
+        operations_url: str,
+    ) -> OperationResponse:
+        """Sign and POST one operation request to a peer, verifying its response.
+
+        federlet does not know where a peer's operations endpoint lives: it is
+        host-owned coordinate data (typically advertised in the manifest's
+        opaque `extensions`). The caller resolves `operations_url` and passes it
+        in. Operation names, payload schemas, and execution stay host-owned.
+        """
+        body = request.model_dump_json(exclude_none=True).encode()
+        r = await self._send(peer.node_id, "POST", operations_url, body=body)
+        resp = OperationResponse.model_validate(r.json())
+        if not verify_response_signature(peer, resp):
             raise ResponseSignatureError("bad_signature")
         return resp
 

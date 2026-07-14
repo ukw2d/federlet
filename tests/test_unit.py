@@ -54,6 +54,7 @@ from federlet import (
     audit_record,
     b64u_decode,
     b64u_encode,
+    bootstrap_from_seeds,
     build_operation_item,
     build_signed_manifest,
     build_signed_request,
@@ -67,6 +68,7 @@ from federlet import (
     probe_peer_health,
     public_jwk,
     public_key_from_jwk,
+    refresh_all,
     refresh_discovered_members,
     refresh_peer_manifest,
     sha256_hex,
@@ -2055,6 +2057,274 @@ async def test_refresh_peer_manifest_rejects_rotation_when_policy_denies():
     assert decision.key_continuity.action == "reject"
 
 
+async def test_refresh_all_returns_decisions_without_persistence():
+    import httpx
+
+    unchanged_key = generate_key()
+    accepted_key = generate_key()
+    quarantine_old_key, quarantine_new_key = generate_key(), generate_key()
+    rejected_key = generate_key()
+    unchanged = _manifest(
+        unchanged_key, node_id="node:unchanged:prod", revision=12
+    )
+    accepted = _manifest(accepted_key, node_id="node:accepted:prod", revision=12)
+    quarantine = _manifest(
+        quarantine_old_key,
+        key_id="quarantine-old-k1",
+        node_id="node:quarantine:prod",
+        revision=12,
+    )
+    rejected = _manifest(rejected_key, node_id="node:rejected:prod", revision=12)
+    refreshed = {
+        "/unchanged.json": unchanged,
+        "/accepted.json": _manifest(
+            accepted_key, node_id=accepted.node_id, revision=13
+        ),
+        "/quarantine.json": _manifest(
+            quarantine_new_key,
+            key_id="quarantine-new-k1",
+            node_id=quarantine.node_id,
+            revision=13,
+        ),
+        "/rejected.json": _manifest(
+            rejected_key, node_id=rejected.node_id, revision=11
+        ),
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=refreshed[request.url.path].model_dump(
+                mode="json", exclude_none=True
+            ),
+        )
+
+    table = MembershipTable()
+    peers = {
+        unchanged.node_id: unchanged,
+        accepted.node_id: accepted,
+        quarantine.node_id: quarantine,
+        rejected.node_id: rejected,
+    }
+    targets = []
+    for path, manifest in [
+        ("/unchanged.json", unchanged),
+        ("/accepted.json", accepted),
+        ("/quarantine.json", quarantine),
+        ("/rejected.json", rejected),
+    ]:
+        manifest_url = f"http://127.0.0.1{path}"
+        table.admit(
+            MemberRecord(
+                node_id=manifest.node_id,
+                manifest_url=manifest_url,
+                manifest_revision=manifest.revision,
+            )
+        )
+        targets.append((manifest, manifest_url))
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decisions = await refresh_all(client, targets)
+    finally:
+        await client.close()
+
+    assert {node_id: d.action for node_id, d in decisions.items()} == {
+        unchanged.node_id: "unchanged",
+        accepted.node_id: "accept",
+        quarantine.node_id: "quarantine",
+        rejected.node_id: "reject",
+    }
+    assert decisions[accepted.node_id].new_revision == 13
+    assert decisions[quarantine.node_id].reason == "stale_manifest"
+    assert decisions[rejected.node_id].reason == "revision_rollback"
+    assert {node_id: peer.revision for node_id, peer in peers.items()} == {
+        unchanged.node_id: 12,
+        accepted.node_id: 12,
+        quarantine.node_id: 12,
+        rejected.node_id: 12,
+    }
+    assert {
+        rec.node_id: (rec.state, rec.manifest_revision)
+        for rec in table.eligible_peers()
+    } == {
+        unchanged.node_id: (PeerState.ACTIVE, 12),
+        accepted.node_id: (PeerState.ACTIVE, 12),
+        quarantine.node_id: (PeerState.ACTIVE, 12),
+        rejected.node_id: (PeerState.ACTIVE, 12),
+    }
+
+
+async def test_refresh_all_uses_key_continuity_policy():
+    import httpx
+
+    old_key, new_key = generate_key(), generate_key()
+    current = _manifest(old_key, key_id="old-k1", revision=12)
+    refreshed = _manifest(new_key, key_id="new-k1", revision=13)
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json=refreshed.model_dump(mode="json", exclude_none=True)
+        )
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decisions = await refresh_all(
+            client,
+            [(current, "http://127.0.0.1/manifest.json")],
+            key_continuity_policy=KeyContinuityPolicy(allow_key_rotation=False),
+        )
+    finally:
+        await client.close()
+
+    decision = decisions[current.node_id]
+    assert decision.action == "reject"
+    assert decision.reason == "rotation_denied"
+    assert decision.key_continuity is not None
+    assert decision.key_continuity.action == "reject"
+
+
+async def test_bootstrap_reports_source_node_and_manifest_url_for_each_bucket():
+    import httpx
+
+    accepted_key, rejected_key = generate_key(), generate_key()
+    accepted = _discoverable_manifest(
+        accepted_key,
+        "accepted-k1",
+        node_id="node:accepted:prod",
+        org_id="accepted",
+        manifest_url="http://127.0.0.1/accepted.json",
+        membership=Membership(
+            introduce_url="http://127.0.0.1/accepted/i",
+            members_url="http://127.0.0.1/accepted/members",
+        ),
+    )
+    rejected = _discoverable_manifest(
+        rejected_key,
+        "rejected-k1",
+        node_id="node:rejected:prod",
+        org_id="rejected",
+        federations=["other"],
+        manifest_url="http://127.0.0.1/rejected.json",
+    )
+    introduced = sign_introduce_response(
+        IntroduceResponse(accepted=True, accepted_node_id="node:local:prod"),
+        accepted_key,
+        "accepted-k1",
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/accepted.json":
+            return httpx.Response(
+                200, json=accepted.model_dump(mode="json", exclude_none=True)
+            )
+        if request.url.path == "/accepted/i":
+            return httpx.Response(
+                200, json=introduced.model_dump(mode="json", exclude_none=True)
+            )
+        if request.url.path == "/rejected.json":
+            return httpx.Response(
+                200, json=rejected.model_dump(mode="json", exclude_none=True)
+            )
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    client = FederationClient(
+        node_id="node:local:prod",
+        federation_id="f",
+        key=generate_key(),
+        key_id="local-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        report = await bootstrap_from_seeds(
+            client,
+            seed_manifest_urls=[
+                "http://127.0.0.1/accepted.json",
+                "http://127.0.0.1/rejected.json",
+                "http://127.0.0.1/failed.json",
+            ],
+            local_manifest_url="http://127.0.0.1/local.json",
+            local_manifest=_discoverable_manifest(
+                generate_key(),
+                "local-manifest-k1",
+                node_id="node:local:prod",
+            ),
+            policy=_discovery_policy(),
+        )
+    finally:
+        await client.close()
+
+    assert [
+        (
+            o.node_id,
+            o.source_node_id,
+            o.seed_manifest_url,
+            o.manifest_url,
+            o.reason,
+        )
+        for o in report.accepted
+    ] == [
+        (
+            accepted.node_id,
+            accepted.node_id,
+            "http://127.0.0.1/accepted.json",
+            "http://127.0.0.1/accepted.json",
+            "ok",
+        )
+    ]
+    assert [
+        (
+            o.node_id,
+            o.source_node_id,
+            o.seed_manifest_url,
+            o.manifest_url,
+            o.reason,
+        )
+        for o in report.rejected
+    ] == [
+        (
+            rejected.node_id,
+            rejected.node_id,
+            "http://127.0.0.1/rejected.json",
+            "http://127.0.0.1/rejected.json",
+            "wrong_federation",
+        )
+    ]
+    assert [
+        (
+            o.node_id,
+            o.source_node_id,
+            o.seed_manifest_url,
+            o.manifest_url,
+            o.reason,
+        )
+        for o in report.failed
+    ] == [
+        (
+            None,
+            None,
+            "http://127.0.0.1/failed.json",
+            "http://127.0.0.1/failed.json",
+            "http_error",
+        )
+    ]
+
+
 async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
     import httpx
 
@@ -2125,7 +2395,17 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
         await client.close()
 
     assert isinstance(report, DiscoveryRefreshReport)
-    assert [o.node_id for o in report.accepted] == [discovered.node_id]
+    assert [
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
+        for o in report.accepted
+    ] == [
+        (
+            discovered.node_id,
+            "http://127.0.0.1/new.json",
+            seed.node_id,
+            "ok",
+        )
+    ]
     assert not report.rejected
     assert not report.skipped
     assert not report.failed
@@ -2202,8 +2482,16 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
         await client.close()
 
     assert not report.accepted
-    assert [(o.node_id, o.reason) for o in report.rejected] == [
-        (rejected_manifest.node_id, "wrong_federation")
+    assert [
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
+        for o in report.rejected
+    ] == [
+        (
+            rejected_manifest.node_id,
+            "http://127.0.0.1/rejected.json",
+            seed.node_id,
+            "wrong_federation",
+        )
     ]
     assert table.get(rejected_manifest.node_id) is None
 
@@ -2283,10 +2571,18 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
     finally:
         await client.close()
 
-    assert [(o.node_id, o.reason) for o in report.skipped] == [
-        ("caller", "self"),
-        (seed.node_id, "existing_peer"),
-        (duplicate_manifest.node_id, "duplicate"),
+    assert [
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
+        for o in report.skipped
+    ] == [
+        ("caller", "http://127.0.0.1/self.json", seed.node_id, "self"),
+        (seed.node_id, "http://127.0.0.1/seed.json", seed.node_id, "existing_peer"),
+        (
+            duplicate_manifest.node_id,
+            "http://127.0.0.1/dup.json",
+            seed.node_id,
+            "duplicate",
+        ),
     ]
     assert [(o.node_id, o.reason) for o in report.rejected] == [
         (duplicate_manifest.node_id, "wrong_federation")
@@ -2425,8 +2721,16 @@ async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
         await client.close()
 
     assert not report.accepted
-    assert [(o.node_id, o.reason) for o in report.failed] == [
-        ("node:private:prod", "ssrf_rejected")
+    assert [
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
+        for o in report.failed
+    ] == [
+        (
+            "node:private:prod",
+            "http://127.0.0.1/private.json",
+            seed.node_id,
+            "ssrf_rejected",
+        )
     ]
 
 

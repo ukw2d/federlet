@@ -6,15 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 
-import httpx
 from pydantic import ValidationError
 
 from .admission import AdmissionPolicy, admit_manifest
 from .client import FederationClient, ManifestVerificationError
 from .membership import MemberRecord
 from .models import Manifest, MemberRef
-from .net import SSRFError
 from .protocols import MembershipStore
+from .reasons import transport_failure_reason
 
 
 @dataclass(frozen=True)
@@ -195,18 +194,9 @@ def _with_manifest(
 
 
 def _failure_reason(exc: Exception) -> str:
-    if isinstance(exc, SSRFError):
-        return "ssrf_rejected"
-    if isinstance(exc, ManifestVerificationError):
-        return str(exc) or "bad_manifest"
-    if isinstance(exc, (ValidationError, JSONDecodeError)):
-        return "malformed_manifest"
-    if isinstance(exc, httpx.TimeoutException):
-        return "timeout"
-    if isinstance(exc, httpx.HTTPStatusError):
-        return "http_error"
-    if isinstance(exc, httpx.TransportError):
-        return "transport_error"
-    if isinstance(exc, httpx.HTTPError):
-        return "http_error"
-    return exc.__class__.__name__
+    match exc:
+        case ManifestVerificationError():
+            return str(exc) or "bad_manifest"
+        case ValidationError() | JSONDecodeError():
+            return "malformed_manifest"
+    return transport_failure_reason(exc) or exc.__class__.__name__

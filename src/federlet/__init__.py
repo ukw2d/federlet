@@ -48,6 +48,12 @@ from .discovery import (
     DiscoveryRefreshReport,
     refresh_discovered_members,
 )
+from .fanout import (
+    OperationFanOutReport,
+    OperationOutcome,
+    OperationTarget,
+    fan_out_operation,
+)
 from .health import PeerHealthProbeResult, probe_peer_health
 from .membership import (
     DisclosurePolicy,
@@ -96,7 +102,12 @@ from .protocols import (
     TokenBucketRateLimiter,
 )
 from .publication import build_signed_manifest
-from .refresh import ManifestRefreshDecision, refresh_peer_manifest
+from .refresh import (
+    ManifestRefreshDecision,
+    RefreshTarget,
+    refresh_all,
+    refresh_peer_manifest,
+)
 from .responses import (
     sign_introduce_response,
     sign_members_response,
@@ -159,6 +170,10 @@ __all__ = [
     "DiscoveryOutcome",
     "DiscoveryRefreshReport",
     "refresh_discovered_members",
+    "OperationFanOutReport",
+    "OperationOutcome",
+    "OperationTarget",
+    "fan_out_operation",
     "PeerHealthProbeResult",
     "probe_peer_health",
     "DisclosurePolicy",
@@ -200,6 +215,8 @@ __all__ = [
     "sign_operation_payload",
     "verify_operation_item",
     "ManifestRefreshDecision",
+    "RefreshTarget",
+    "refresh_all",
     "refresh_peer_manifest",
     "sign_introduce_response",
     "sign_members_response",

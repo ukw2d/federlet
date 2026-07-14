@@ -13,7 +13,7 @@ from .admission import AdmissionPolicy, admit_manifest
 from .client import FederationClient, ManifestVerificationError
 from .crypto import b64u_encode
 from .models import IntroduceRequest, IntroduceResponse, Manifest
-from .net import SSRFError
+from .reasons import transport_failure_reason
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,9 @@ class SeedBootstrapOutcome:
     reason: str
     seed_manifest: Manifest | None = None
     response: IntroduceResponse | None = None
+    node_id: str | None = None
+    source_node_id: str | None = None
+    manifest_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +62,7 @@ async def bootstrap_from_seeds(
                 max_skew_seconds=max_skew_seconds,
             )
         except Exception as exc:
-            failed.append(SeedBootstrapOutcome(seed_url, _failure_reason(exc)))
+            failed.append(_outcome(seed_url, _failure_reason(exc)))
             continue
 
         decision = await admit_manifest(
@@ -68,9 +71,7 @@ async def bootstrap_from_seeds(
             max_skew_seconds=max_skew_seconds,
         )
         if not decision.accepted:
-            rejected.append(
-                SeedBootstrapOutcome(seed_url, decision.reason, seed_manifest)
-            )
+            rejected.append(_outcome(seed_url, decision.reason, seed_manifest))
             continue
 
         intro = IntroduceRequest(
@@ -84,12 +85,10 @@ async def bootstrap_from_seeds(
         try:
             response = await client.introduce(seed_manifest, intro)
         except Exception as exc:
-            failed.append(
-                SeedBootstrapOutcome(seed_url, _failure_reason(exc), seed_manifest)
-            )
+            failed.append(_outcome(seed_url, _failure_reason(exc), seed_manifest))
             continue
 
-        outcome = SeedBootstrapOutcome(
+        outcome = _outcome(
             seed_url,
             response.reason or ("ok" if response.accepted else "rejected"),
             seed_manifest,
@@ -103,11 +102,28 @@ async def bootstrap_from_seeds(
     return SeedBootstrapReport(accepted=accepted, rejected=rejected, failed=failed)
 
 
+def _outcome(
+    seed_manifest_url: str,
+    reason: str,
+    seed_manifest: Manifest | None = None,
+    response: IntroduceResponse | None = None,
+) -> SeedBootstrapOutcome:
+    node_id = seed_manifest.node_id if seed_manifest else None
+    return SeedBootstrapOutcome(
+        seed_manifest_url=seed_manifest_url,
+        reason=reason,
+        seed_manifest=seed_manifest,
+        response=response,
+        node_id=node_id,
+        source_node_id=node_id,
+        manifest_url=seed_manifest_url,
+    )
+
+
 def _failure_reason(exc: Exception) -> str:
-    if isinstance(exc, SSRFError):
-        return "ssrf_rejected"
-    if isinstance(exc, ManifestVerificationError):
-        return str(exc) or "bad_manifest"
-    if isinstance(exc, ValidationError):
-        return "malformed_manifest"
-    return exc.__class__.__name__
+    match exc:
+        case ManifestVerificationError():
+            return str(exc) or "bad_manifest"
+        case ValidationError():
+            return "malformed_manifest"
+    return transport_failure_reason(exc) or exc.__class__.__name__

@@ -16,6 +16,12 @@ from .certauth import (
     verify_certificate_identity,
 )
 from .client import SIGNATURE_HEADER, FederationClient
+from .fanout import (
+    OperationFanOutReport,
+    OperationOutcome,
+    OperationTarget,
+    fan_out_operation,
+)
 from .membership import MembershipTable
 from .models import Manifest, Membership, PublicKey
 from .node import FederationNode
@@ -30,6 +36,7 @@ from .operations import (
     verify_operation_item,
 )
 from .publication import build_signed_manifest
+from .refresh import ManifestRefreshDecision, RefreshTarget, refresh_all
 from .responses import (
     sign_introduce_response,
     sign_members_response,
@@ -54,13 +61,18 @@ __all__ = [
     "Manifest",
     "Membership",
     "MembershipTable",
+    "OperationFanOutReport",
     "OperationItem",
+    "OperationOutcome",
     "OperationRequest",
     "OperationResponse",
+    "OperationTarget",
     "PayloadProvenance",
     "PublicKey",
+    "RefreshTarget",
     "SIGNATURE_HEADER",
     "SeedBootstrapReport",
+    "ManifestRefreshDecision",
     "UnauthorizedCertificateIdentity",
     "UnauthorizedPeerRequest",
     "VerifiedPeer",
@@ -68,6 +80,8 @@ __all__ = [
     "bootstrap_from_seeds",
     "certificate_thumbprint",
     "verify_certificate_identity",
+    "fan_out_operation",
+    "refresh_all",
     "build_signed_manifest",
     "build_operation_item",
     "check_manifest",

@@ -368,8 +368,11 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.discovery` | Bounded peer discovery from signed membership hints. |
 | `federlet.health` | Protocol and health probe classification helpers. |
 | `federlet.operations` | Generic operation request/response envelopes and signed operation-item helpers. |
+| `federlet.fanout` | Generic concurrent operation fan-out over selected peers with a structured per-peer success/failure report. |
+| `federlet.certauth` | Generic certificate-identity (mTLS) auth primitive; trust roots and cert-to-peer mapping stay host-owned. |
+| `federlet.urls` | `well_known_url` joiner for caller-supplied base and path; federlet hardcodes no paths. |
 | `federlet.net` | SSRF guard for manifest and endpoint URLs. |
-| `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, protocol, and health calls. |
+| `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, protocol, health, and operation calls. |
 | `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
 
 ## Usage scenarios

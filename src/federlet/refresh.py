@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -12,6 +14,8 @@ from .admission import (
 )
 from .client import FederationClient, ManifestVerificationError
 from .models import Manifest
+
+RefreshTarget = tuple[Manifest, str]
 
 
 @dataclass(frozen=True)
@@ -96,3 +100,25 @@ async def refresh_peer_manifest(
         new_revision=new_revision,
         key_continuity=continuity,
     )
+
+
+async def refresh_all(
+    client: FederationClient,
+    peers: Iterable[RefreshTarget],
+    *,
+    key_continuity_policy: KeyContinuityPolicy | None = None,
+    max_skew_seconds: int = 300,
+) -> dict[str, ManifestRefreshDecision]:
+    """Refresh many peer manifests without owning persistence or state."""
+
+    async def refresh_one(peer: Manifest, manifest_url: str):
+        decision = await refresh_peer_manifest(
+            client,
+            peer,
+            manifest_url,
+            key_continuity_policy=key_continuity_policy,
+            max_skew_seconds=max_skew_seconds,
+        )
+        return peer.node_id, decision
+
+    return dict(await asyncio.gather(*(refresh_one(*peer) for peer in peers)))

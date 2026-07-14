@@ -243,6 +243,15 @@ The owning node may sign each `OperationItem` so downstream consumers can retain
 provenance after aggregating payloads from many peers. The response envelope may
 also be signed to authenticate the immediate peer response.
 
+### 6.3 Fan-out
+
+The core provides a generic fan-out helper (`fan_out_operation`) that sends one
+operation request to many peers concurrently and collects a structured
+per-peer success/failure report. It knows nothing about the operation's name,
+payload schema, coverage, or how results merge. Each target is a peer paired
+with its host-resolved operations URL — the endpoint lives in host-owned
+manifest `extensions`, so the caller supplies it; federlet resolves no paths.
+
 ## 7. Security properties
 
 - `signed_http` is the mandatory baseline peer authentication. Every manifest
