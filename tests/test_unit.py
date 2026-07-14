@@ -2162,6 +2162,49 @@ async def test_refresh_all_returns_decisions_without_persistence():
     }
 
 
+async def test_refresh_all_isolates_transport_failures_per_peer():
+    import httpx
+
+    ok_key, slow_key = generate_key(), generate_key()
+    ok = _manifest(ok_key, node_id="node:ok:prod", revision=12)
+    slow = _manifest(slow_key, node_id="node:slow:prod", revision=12)
+    ok_refreshed = _manifest(ok_key, node_id=ok.node_id, revision=13)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ok.json":
+            return httpx.Response(
+                200, json=ok_refreshed.model_dump(mode="json", exclude_none=True)
+            )
+        raise httpx.ReadTimeout("slow peer", request=request)
+
+    client = FederationClient(
+        node_id="caller",
+        federation_id="f",
+        key=generate_key(),
+        key_id="caller-k1",
+        allow_private=True,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        decisions = await refresh_all(
+            client,
+            [
+                (ok, "http://127.0.0.1/ok.json"),
+                (slow, "http://127.0.0.1/slow.json"),
+            ],
+        )
+    finally:
+        await client.close()
+
+    assert decisions[ok.node_id].action == "accept"
+    assert decisions[ok.node_id].new_revision == 13
+    assert decisions[slow.node_id] == ManifestRefreshDecision(
+        "quarantine",
+        "timeout",
+        old_revision=12,
+    )
+
+
 async def test_refresh_all_uses_key_continuity_policy():
     import httpx
 

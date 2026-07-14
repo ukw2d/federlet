@@ -14,6 +14,7 @@ from .admission import (
 )
 from .client import FederationClient, ManifestVerificationError
 from .models import Manifest
+from .reasons import transport_failure_reason
 
 RefreshTarget = tuple[Manifest, str]
 
@@ -57,6 +58,15 @@ async def refresh_peer_manifest(
                 old_revision=old_revision,
             )
         return ManifestRefreshDecision("reject", reason, old_revision=old_revision)
+    except Exception as exc:
+        reason = transport_failure_reason(exc)
+        if reason is not None:
+            return ManifestRefreshDecision(
+                "quarantine",
+                reason,
+                old_revision=old_revision,
+            )
+        raise
 
     new_revision = refreshed.revision
     if new_revision < old_revision:

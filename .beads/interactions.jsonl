@@ -97,3 +97,4 @@
 {"id":"int-72e4cc1f","kind":"field_change","created_at":"2026-07-14T13:00:21.044073Z","actor":"Vlad Andreev","issue_id":"pimx-3yq.7","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"implemented"}}
 {"id":"int-ed61c2af","kind":"field_change","created_at":"2026-07-14T13:00:21.303848Z","actor":"Vlad Andreev","issue_id":"pimx-3yq.8","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"implemented"}}
 {"id":"int-a0c71647","kind":"field_change","created_at":"2026-07-14T13:00:30.010386Z","actor":"Vlad Andreev","issue_id":"pimx-3yq","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"all children implemented and verified"}}
+{"id":"int-606554dd","kind":"field_change","created_at":"2026-07-14T13:07:34.557538Z","actor":"Vlad Andreev","issue_id":"pimx-8al","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"implemented"}}
