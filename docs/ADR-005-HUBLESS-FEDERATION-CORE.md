@@ -86,6 +86,24 @@ Out of scope:
 - central registry as the default design;
 - DHT/libp2p routing.
 
+### 4.1 Domain-neutrality invariant
+
+The core is domain-agnostic and must stay that way. `federlet` never learns:
+
+- **host path knowledge** — e.g. an `agent-directory.json` or `.well-known`
+  path. A host resolves its own URLs and hands them to the library. The optional
+  `well_known_url(base_url, path)` helper only joins a base with a
+  caller-supplied path; it hardcodes no path of its own.
+- **host operation names** — e.g. `directory.search`. The core carries an opaque
+  `operation` string and never branches on its value.
+- **downstream product identity** — the core names no host product.
+- **enterprise auth semantics** — e.g. OIDC/JWKS token validation. The core
+  ships `signed_http` and exposes hooks (`EvidenceVerifier`, auth-method
+  verifiers) that a host uses to plug in its own auth methods.
+
+A conformance test (`tests/test_neutrality.py`) scans the shipped package for a
+denylist of tokens that would signal a regression of this invariant.
+
 ## 5. Manifest
 
 A manifest is signed, node-owned coordinate data. It answers:
