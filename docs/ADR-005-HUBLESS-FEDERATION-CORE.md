@@ -229,6 +229,12 @@ also be signed to authenticate the immediate peer response.
 
 ## 7. Security properties
 
+- `signed_http` is the mandatory baseline peer authentication. Every manifest
+  advertises it, admission requires it by default, and any additional auth
+  method a host adds (e.g. mTLS certificate identity) layers on top of it —
+  never replaces it. Its invariants (target/method/path/body binding, freshness,
+  and nonce-claim-after-verify replay protection) are locked by
+  `tests/test_signed_http_invariants.py`.
 - A forged manifest fails signature verification.
 - A stale or expired manifest can be rejected by local policy.
 - A signed request cannot be replayed if the receiver uses a nonce cache.
