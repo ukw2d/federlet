@@ -13,7 +13,10 @@ add a token to ``FORBIDDEN_TOKENS`` to lock out a new leak.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
+
+import pytest
 
 import federlet
 
@@ -30,9 +33,16 @@ FORBIDDEN_TOKENS: dict[str, str] = {
     ".well-known": "hardcoded well-known path — callers supply paths to well_known_url",
     "oidc": "enterprise auth semantics — expose hooks, do not implement OIDC",
     "openid": "enterprise auth semantics — expose hooks, do not implement OIDC",
+    "jwks": "enterprise auth semantics — expose hooks, do not fetch/validate JWKS",
+    "id_token": "enterprise auth semantics — expose hooks, do not validate id_token",
 }
 
+# Dependency names that would signal an OIDC/enterprise-IdP stack sneaking in.
+FORBIDDEN_DEPENDENCY_TOKENS = ("oidc", "openid", "authlib", "python-jose", "oauth")
+
 PACKAGE_ROOT = Path(federlet.__file__).parent
+# .../src/federlet -> .../src -> repo root
+PYPROJECT = PACKAGE_ROOT.parent.parent / "pyproject.toml"
 
 
 def _package_sources() -> list[Path]:
@@ -53,3 +63,23 @@ def test_no_host_specific_tokens_in_source():
                 rel = path.relative_to(PACKAGE_ROOT.parent)
                 violations.append(f"{rel}: '{token}' — {reason}")
     assert not violations, "domain-neutrality violations:\n" + "\n".join(violations)
+
+
+def test_no_oidc_or_enterprise_auth_dependency():
+    if not PYPROJECT.exists():
+        pytest.skip("pyproject.toml not present (installed, not editable)")
+    project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
+    deps: list[str] = list(project.get("dependencies", []))
+    for group in project.get("optional-dependencies", {}).values():
+        deps.extend(group)
+
+    violations = [
+        dep
+        for dep in deps
+        for token in FORBIDDEN_DEPENDENCY_TOKENS
+        if token in dep.lower()
+    ]
+    assert not violations, (
+        "federlet must ship no OIDC/enterprise-IdP dependency; expose hooks "
+        f"instead. Offending deps: {violations}"
+    )

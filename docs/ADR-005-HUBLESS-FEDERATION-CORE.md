@@ -98,8 +98,11 @@ The core is domain-agnostic and must stay that way. `federlet` never learns:
   `operation` string and never branches on its value.
 - **downstream product identity** — the core names no host product.
 - **enterprise auth semantics** — e.g. OIDC/JWKS token validation. The core
-  ships `signed_http` and exposes hooks (`EvidenceVerifier`, auth-method
-  verifiers) that a host uses to plug in its own auth methods.
+  ships `signed_http` and exposes hooks (`EvidenceVerifier`, `AuthMethodVerifier`)
+  that a host uses to plug in its own auth methods. federlet implements no OIDC
+  issuer configuration, token validation, JWKS fetching, or enterprise-IdP logic
+  and takes no such dependency; a host that wants OIDC registers an auth-method
+  verifier that calls its own IdP stack.
 
 A conformance test (`tests/test_neutrality.py`) scans the shipped package for a
 denylist of tokens that would signal a regression of this invariant.
