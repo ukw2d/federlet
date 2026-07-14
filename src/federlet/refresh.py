@@ -59,11 +59,11 @@ async def refresh_peer_manifest(
             )
         return ManifestRefreshDecision("reject", reason, old_revision=old_revision)
     except Exception as exc:
-        reason = transport_failure_reason(exc)
-        if reason is not None:
+        transport_reason = transport_failure_reason(exc)
+        if transport_reason is not None:
             return ManifestRefreshDecision(
                 "quarantine",
-                reason,
+                transport_reason,
                 old_revision=old_revision,
             )
         raise
@@ -121,7 +121,10 @@ async def refresh_all(
 ) -> dict[str, ManifestRefreshDecision]:
     """Refresh many peer manifests without owning persistence or state."""
 
-    async def refresh_one(peer: Manifest, manifest_url: str):
+    async def refresh_one(
+        peer: Manifest,
+        manifest_url: str,
+    ) -> tuple[str, ManifestRefreshDecision]:
         decision = await refresh_peer_manifest(
             client,
             peer,
