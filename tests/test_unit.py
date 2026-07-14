@@ -442,6 +442,79 @@ async def test_admission_policy_requires_expiry_by_default():
     assert (await admit_manifest(manifest, policy)).reason == "missing_expires_at"
 
 
+async def test_admission_accepts_custom_auth_method_via_host_hook():
+    key = generate_key()
+    manifest = _manifest(
+        key,
+        federations=["example-federation-prod"],
+        protocol_versions=["example-federation/1"],
+        auth_methods=["mtls"],
+    )
+
+    async def verify_mtls(_manifest):
+        return True, "ok"
+
+    policy = AdmissionPolicy(
+        federation_id="example-federation-prod",
+        protocol_versions={"example-federation/1"},
+        require_expires_at=False,
+        require_signed_http=False,  # host accepts mtls-only peers
+        auth_method_verifiers={"mtls": verify_mtls},
+    )
+    decision = await admit_manifest(manifest, policy)
+    assert decision.accepted
+    assert decision.reason == "ok"
+
+
+async def test_admission_rejects_advertised_method_when_host_hook_fails():
+    key = generate_key()
+    manifest = _manifest(
+        key,
+        federations=["example-federation-prod"],
+        protocol_versions=["example-federation/1"],
+        auth_methods=["signed_http", "mtls"],
+    )
+
+    async def verify_mtls(_manifest):
+        return False, "cert_untrusted"
+
+    policy = AdmissionPolicy(
+        federation_id="example-federation-prod",
+        protocol_versions={"example-federation/1"},
+        require_expires_at=False,
+        auth_method_verifiers={"mtls": verify_mtls},
+    )
+    decision = await admit_manifest(manifest, policy)
+    assert not decision.accepted
+    assert decision.reason == "cert_untrusted"
+
+
+async def test_admission_ignores_verifier_for_unadvertised_method():
+    key = generate_key()
+    manifest = _manifest(
+        key,
+        federations=["example-federation-prod"],
+        protocol_versions=["example-federation/1"],
+        auth_methods=["signed_http"],  # does not advertise mtls
+    )
+    called = False
+
+    async def verify_mtls(_manifest):
+        nonlocal called
+        called = True
+        return False, "cert_untrusted"
+
+    policy = AdmissionPolicy(
+        federation_id="example-federation-prod",
+        protocol_versions={"example-federation/1"},
+        require_expires_at=False,
+        auth_method_verifiers={"mtls": verify_mtls},
+    )
+    decision = await admit_manifest(manifest, policy)
+    assert decision.accepted
+    assert not called
+
+
 async def test_domain_evidence_verifier_rejects_endpoint_outside_domain():
     key = generate_key()
     manifest = _manifest(

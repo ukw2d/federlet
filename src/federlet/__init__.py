@@ -6,6 +6,7 @@ A framework-neutral HTTPS federation protocol library.
 from .admission import (
     AdmissionDecision,
     AdmissionPolicy,
+    AuthMethodVerifier,
     EvidenceVerifier,
     KeyContinuityDecision,
     KeyContinuityPolicy,
@@ -126,6 +127,7 @@ __all__ = [
     "FederationNode",
     "AdmissionDecision",
     "AdmissionPolicy",
+    "AuthMethodVerifier",
     "admit_manifest",
     "check_key_continuity",
     "domain_evidence_verifier",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 from urllib.parse import urlparse
@@ -18,6 +19,18 @@ class EvidenceVerifier(Protocol):
         ...
 
 
+class AuthMethodVerifier(Protocol):
+    async def __call__(self, manifest: Manifest) -> tuple[bool, str]:
+        """Verify a peer's advertised auth method is acceptable (may do I/O).
+
+        federlet ships no verifier beyond the built-in `signed_http` baseline.
+        A host registers one per advertised method it wants to police (e.g.
+        `mtls`); the core only routes advertised methods to the host's callback
+        and never interprets a method's meaning itself.
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class AdmissionPolicy:
     federation_id: str
@@ -28,6 +41,9 @@ class AdmissionPolicy:
     allow_private_hosts: bool = False
     allowed_endpoint_domains: set[str] = field(default_factory=set)
     evidence_verifier: EvidenceVerifier | None = None
+    auth_method_verifiers: Mapping[str, AuthMethodVerifier] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -65,6 +81,13 @@ async def admit_manifest(
         return AdmissionDecision(False, "unsupported_protocol")
     if policy.require_signed_http and "signed_http" not in manifest.auth_methods:
         return AdmissionDecision(False, "signed_http_required")
+
+    for method in manifest.auth_methods:
+        verifier = policy.auth_method_verifiers.get(method)
+        if verifier is not None:
+            ok, reason = await verifier(manifest)
+            if not ok:
+                return AdmissionDecision(False, reason)
 
     endpoint_reason = _check_endpoint(manifest.endpoint, policy)
     if endpoint_reason:

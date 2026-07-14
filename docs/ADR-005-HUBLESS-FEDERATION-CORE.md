@@ -161,6 +161,13 @@ Example:
 `extensions` is opaque to federlet. Hosts use it to advertise profile metadata,
 operation endpoints, schema URLs, or other application-owned coordinates.
 
+`auth_methods` advertises how a peer can be authenticated. `signed_http` is the
+built-in baseline (see section 7). Beyond it, the core interprets no method's
+meaning: a host registers an auth-method verifier per advertised method it wants
+to police (via `AdmissionPolicy.auth_method_verifiers`), and admission routes
+each advertised method to the host's callback. Methods with no registered
+verifier are left to host policy.
+
 ## 6. Operation envelopes
 
 Federation standardizes a generic operation envelope. It does not standardize
