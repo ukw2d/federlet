@@ -114,6 +114,7 @@ from .signing import (
     verify_revocation_notice,
     verify_signed_request,
 )
+from .urls import well_known_url
 
 __all__ = [
     "FederationClient",
@@ -207,4 +208,5 @@ __all__ = [
     "verify_response_signature",
     "verify_revocation_notice",
     "verify_signed_request",
+    "well_known_url",
 ]

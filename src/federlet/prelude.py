@@ -36,6 +36,7 @@ from .signing import (
     sign_manifest,
     verify_peer_request,
 )
+from .urls import well_known_url
 
 __all__ = [
     "AdmissionPolicy",
@@ -67,4 +68,5 @@ __all__ = [
     "sign_revocations_response",
     "verify_peer_request",
     "verify_operation_item",
+    "well_known_url",
 ]

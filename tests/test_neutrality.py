@@ -27,7 +27,7 @@ FORBIDDEN_TOKENS: dict[str, str] = {
     "agent_directory": "host path knowledge — hosts resolve their own URLs",
     "directory.search": "host operation name — federlet does not know operations",
     "directory_search": "host operation name — federlet does not know operations",
-    "well-known": "hardcoded well-known path — callers supply paths to well_known_url",
+    ".well-known": "hardcoded well-known path — callers supply paths to well_known_url",
     "oidc": "enterprise auth semantics — expose hooks, do not implement OIDC",
     "openid": "enterprise auth semantics — expose hooks, do not implement OIDC",
 }

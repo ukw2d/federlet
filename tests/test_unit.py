@@ -84,6 +84,7 @@ from federlet import (
     verify_response_signature,
     verify_revocation_notice,
     verify_signed_request,
+    well_known_url,
 )
 from federlet.client import FederationClient
 from federlet.net import SSRFError, _assert_public_host
@@ -2759,3 +2760,33 @@ def test_ssrf_guard_blocks_private_hosts():
         _assert_public_host("http://127.0.0.1:8080/m.json")
     # explicit opt-in bypasses the check (used for local integration tests)
     _assert_public_host("http://127.0.0.1/x", allow_private=True)
+
+
+@pytest.mark.parametrize(
+    ("base", "path", "expected"),
+    [
+        ("https://n.example", "manifest.json", "https://n.example/manifest.json"),
+        ("https://n.example/", "manifest.json", "https://n.example/manifest.json"),
+        ("https://n.example", "/manifest.json", "https://n.example/manifest.json"),
+        ("https://n.example/", "/manifest.json", "https://n.example/manifest.json"),
+        (
+            "https://n.example/federation/v1/",
+            "/members",
+            "https://n.example/federation/v1/members",
+        ),
+        ("https://n.example", "", "https://n.example"),
+        ("https://n.example/", "", "https://n.example"),
+    ],
+)
+def test_well_known_url_normalizes_base_and_path(base, path, expected):
+    assert well_known_url(base, path) == expected
+
+
+def test_well_known_url_returns_absolute_path_unchanged():
+    absolute = "https://other.example/already/absolute.json"
+    assert well_known_url("https://n.example", absolute) == absolute
+
+
+def test_well_known_url_rejects_non_absolute_base():
+    with pytest.raises(ValueError):
+        well_known_url("n.example/manifest", "manifest.json")
