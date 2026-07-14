@@ -168,6 +168,12 @@ to police (via `AdmissionPolicy.auth_method_verifiers`), and admission routes
 each advertised method to the host's callback. Methods with no registered
 verifier are left to host policy.
 
+For `mtls`, the core ships a generic certificate-identity primitive
+(`verify_certificate_identity`) that mechanically matches a host-presented
+certificate identity against a host-supplied expected identity and binds it to
+a host-chosen node_id. federlet ships no CA bundle, resolves no trust roots, and
+never maps a certificate to a node itself — that policy stays with the host.
+
 ## 6. Operation envelopes
 
 Federation standardizes a generic operation envelope. It does not standardize

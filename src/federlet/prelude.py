@@ -8,6 +8,13 @@ envelopes. Lower-level signing and crypto primitives live in `federlet.lowlevel`
 
 from .admission import AdmissionPolicy, admit_manifest
 from .bootstrap import SeedBootstrapReport, bootstrap_from_seeds
+from .certauth import (
+    CertificateIdentity,
+    CertVerifiedPeer,
+    UnauthorizedCertificateIdentity,
+    certificate_thumbprint,
+    verify_certificate_identity,
+)
 from .client import SIGNATURE_HEADER, FederationClient
 from .membership import MembershipTable
 from .models import Manifest, Membership, PublicKey
@@ -40,6 +47,8 @@ from .urls import well_known_url
 
 __all__ = [
     "AdmissionPolicy",
+    "CertificateIdentity",
+    "CertVerifiedPeer",
     "FederationClient",
     "FederationNode",
     "Manifest",
@@ -52,10 +61,13 @@ __all__ = [
     "PublicKey",
     "SIGNATURE_HEADER",
     "SeedBootstrapReport",
+    "UnauthorizedCertificateIdentity",
     "UnauthorizedPeerRequest",
     "VerifiedPeer",
     "admit_manifest",
     "bootstrap_from_seeds",
+    "certificate_thumbprint",
+    "verify_certificate_identity",
     "build_signed_manifest",
     "build_operation_item",
     "check_manifest",

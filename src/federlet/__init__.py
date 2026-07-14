@@ -20,6 +20,13 @@ from .bootstrap import (
     SeedBootstrapReport,
     bootstrap_from_seeds,
 )
+from .certauth import (
+    CertificateIdentity,
+    CertVerifiedPeer,
+    UnauthorizedCertificateIdentity,
+    certificate_thumbprint,
+    verify_certificate_identity,
+)
 from .client import (
     SIGNATURE_HEADER,
     FederationClient,
@@ -134,6 +141,11 @@ __all__ = [
     "KeyContinuityDecision",
     "KeyContinuityPolicy",
     "audit_record",
+    "CertificateIdentity",
+    "CertVerifiedPeer",
+    "UnauthorizedCertificateIdentity",
+    "certificate_thumbprint",
+    "verify_certificate_identity",
     "SeedBootstrapOutcome",
     "SeedBootstrapReport",
     "bootstrap_from_seeds",
