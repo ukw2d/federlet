@@ -2064,9 +2064,7 @@ async def test_refresh_all_returns_decisions_without_persistence():
     accepted_key = generate_key()
     quarantine_old_key, quarantine_new_key = generate_key(), generate_key()
     rejected_key = generate_key()
-    unchanged = _manifest(
-        unchanged_key, node_id="node:unchanged:prod", revision=12
-    )
+    unchanged = _manifest(unchanged_key, node_id="node:unchanged:prod", revision=12)
     accepted = _manifest(accepted_key, node_id="node:accepted:prod", revision=12)
     quarantine = _manifest(
         quarantine_old_key,
@@ -2094,9 +2092,7 @@ async def test_refresh_all_returns_decisions_without_persistence():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json=refreshed[request.url.path].model_dump(
-                mode="json", exclude_none=True
-            ),
+            json=refreshed[request.url.path].model_dump(mode="json", exclude_none=True),
         )
 
     table = MembershipTable()
@@ -2439,8 +2435,7 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
 
     assert isinstance(report, DiscoveryRefreshReport)
     assert [
-        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
-        for o in report.accepted
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason) for o in report.accepted
     ] == [
         (
             discovered.node_id,
@@ -2526,8 +2521,7 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
 
     assert not report.accepted
     assert [
-        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
-        for o in report.rejected
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason) for o in report.rejected
     ] == [
         (
             rejected_manifest.node_id,
@@ -2615,8 +2609,7 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
         await client.close()
 
     assert [
-        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
-        for o in report.skipped
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason) for o in report.skipped
     ] == [
         ("caller", "http://127.0.0.1/self.json", seed.node_id, "self"),
         (seed.node_id, "http://127.0.0.1/seed.json", seed.node_id, "existing_peer"),
@@ -2765,8 +2758,7 @@ async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
 
     assert not report.accepted
     assert [
-        (o.node_id, o.manifest_url, o.source_node_id, o.reason)
-        for o in report.failed
+        (o.node_id, o.manifest_url, o.source_node_id, o.reason) for o in report.failed
     ] == [
         (
             "node:private:prod",
