@@ -363,7 +363,7 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.signing` | Manifest signing/checking and signed request construction/verification. |
 | `federlet.audit` | Pure audit record builder for host logging sinks. |
 | `federlet.admission` | Local manifest admission checks and host-supplied evidence verifier protocol. |
-| `federlet.membership` | In-memory membership state helpers; persistence remains host-owned. |
+| `federlet.membership` | Membership state model (`MemberRecord`), federlet-owned admission/backoff/eligibility policy functions, and `MembershipTable` (in-memory reference store). Durable persistence is host-owned. |
 | `federlet.refresh` | One-shot manifest refresh and key-continuity decision helper. |
 | `federlet.discovery` | Bounded peer discovery from signed membership hints. |
 | `federlet.health` | Protocol and health probe classification helpers. |
@@ -373,7 +373,42 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.urls` | `well_known_url` joiner for caller-supplied base and path; federlet hardcodes no paths. |
 | `federlet.net` | SSRF guard for manifest and endpoint URLs. |
 | `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, protocol, health, and operation calls. |
-| `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` for Mongo/Postgres-backed hosts. |
+| `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` (thin `get`/`upsert`/`values` CRUD port) for redis/SQL-backed hosts. |
+
+## Membership durability
+
+federlet keeps a functional core and pushes all persistence to the host. Two
+concerns split cleanly:
+
+- **Storage is a host-owned port.** `MembershipStore` is a thin CRUD interface —
+  `get(node_id)`, `upsert(record)`, `values()`. A host backs it with redis, SQL,
+  or a JSON file in roughly ten lines. `MembershipTable` is the optional
+  in-memory reference implementation (a default and test double); it is *not*
+  required and holds no policy.
+- **Policy is federlet-owned.** Admission, exponential backoff, and eligibility
+  are pure functions — `admit`, `record_success`, `record_failure` (with
+  `CooldownPolicy`), `set_state`, and `eligible_peers` — that federlet applies
+  over records read from and written back to your store. Adapters never
+  reimplement the state machine; they persist `MemberRecord`, which is a Pydantic
+  model that round-trips through `model_dump(mode="json")` / `model_validate`.
+
+The application-facing pattern is always read → apply policy → persist:
+
+```python
+rec = store.get(node_id)
+if rec is not None:
+    store.upsert(record_failure(rec, cooldown_policy))
+```
+
+### Manifest persistence is host-owned too
+
+There is a durability port for *members* but deliberately none for *manifests*.
+Inbound verification (`verify_known_inbound`) reads the node's `peer_manifests`
+map, so a host that restarts with an empty map will reject known peers until it
+re-fetches them. **Hosts must rehydrate `peer_manifests` at startup**, alongside
+loading membership records into their `MembershipStore` adapter. `Manifest` is a
+Pydantic wire model, so persist it with the same `model_dump`/`model_validate`
+round-trip used for `MemberRecord`.
 
 ## Usage scenarios
 

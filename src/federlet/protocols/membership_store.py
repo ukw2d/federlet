@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -8,24 +7,16 @@ if TYPE_CHECKING:
 
 
 class MembershipStore(Protocol):
-    """Persistence port for host-owned membership state."""
+    """Thin storage port for host-owned membership state (CRUD only).
+
+    Adapters implement plain persistence — redis/SQL/json in ~10 lines.
+    Admission, backoff, and eligibility are federlet-owned policy applied over
+    the records this store holds (see ``membership`` module), never methods an
+    adapter must supply.
+    """
 
     def get(self, node_id: str) -> MemberRecord | None: ...
 
     def upsert(self, rec: MemberRecord) -> MemberRecord: ...
 
-    def admit(
-        self, rec: MemberRecord, accepted_until: datetime | None = None
-    ) -> None: ...
-
-    def reject(self, node_id: str) -> None: ...
-
-    def revoke(self, node_id: str) -> None: ...
-
-    def mark_stale(self, node_id: str) -> None: ...
-
-    def record_success(self, node_id: str) -> None: ...
-
-    def record_failure(self, node_id: str, now: datetime | None = None) -> None: ...
-
-    def eligible_peers(self, now: datetime | None = None) -> list[MemberRecord]: ...
+    def values(self) -> list[MemberRecord]: ...

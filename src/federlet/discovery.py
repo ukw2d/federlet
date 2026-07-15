@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from .admission import AdmissionPolicy, admit_manifest
 from .client import FederationClient, ManifestVerificationError
-from .membership import MemberRecord
+from .membership import MemberRecord, admit, eligible_peers
 from .models import Manifest, MemberRef
 from .protocols import MembershipStore
 from .reasons import transport_failure_reason
@@ -69,7 +69,7 @@ async def refresh_discovered_members(
     seen_node_ids: set[str] = set()
     seen_manifest_urls: set[str] = set()
 
-    for rec in table.eligible_peers():
+    for rec in eligible_peers(table):
         peer_manifest = peer_manifests.get(rec.node_id)
         if peer_manifest is None:
             outcomes.failed.append(_outcome_from_record(rec, "missing_peer_manifest"))
@@ -150,12 +150,14 @@ async def _process_ref(
         outcomes.rejected.append(_with_manifest(base, decision.reason, manifest))
         return
 
-    table.admit(
-        MemberRecord(
-            node_id=manifest.node_id,
-            org_id=manifest.org_id,
-            manifest_url=ref.manifest_url,
-            manifest_revision=manifest.revision,
+    table.upsert(
+        admit(
+            MemberRecord(
+                node_id=manifest.node_id,
+                org_id=manifest.org_id,
+                manifest_url=ref.manifest_url,
+                manifest_revision=manifest.revision,
+            )
         )
     )
     outcomes.accepted.append(_with_manifest(base, "ok", manifest))

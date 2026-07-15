@@ -1,4 +1,11 @@
-"""Local membership table: admission state + health/cooldown."""
+"""Local membership: a thin storage default plus federlet-owned health policy.
+
+The durability seam is the ``MembershipStore`` port (see ``protocols``): a host
+implements dumb CRUD (``get``/``upsert``/``values``) backed by redis/SQL/json.
+Admission, backoff, and eligibility are *policy* — pure functions federlet
+applies over the records a store holds, never methods an adapter must supply.
+``MembershipTable`` is the optional in-memory reference implementation.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,9 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from ._time import utc_now
+from pydantic import AwareDatetime, BaseModel, field_serializer
+
+from ._time import iso_z, utc_now
 from .crypto import JWK
 from .models import MemberRef, RevocationNotice
 from .signing import verify_revocation_notice
@@ -25,17 +34,29 @@ class PeerState(str, Enum):
     REVOKED = "revoked"
 
 
-@dataclass
-class MemberRecord:
+class MemberRecord(BaseModel):
+    """Runtime membership state for one peer.
+
+    A pydantic model so hosts persist and rehydrate it via ``model_dump``/
+    ``model_validate`` (see the ``MembershipStore`` durability port) without a
+    hand-rolled DTO. Mutated in place by the policy functions below.
+    """
+
     node_id: str
     manifest_url: str
     org_id: str | None = None
     manifest_revision: int = 0
     state: PeerState = PeerState.ACTIVE
-    accepted_until: datetime | None = None
-    cooldown_until: datetime | None = None
+    accepted_until: AwareDatetime | None = None
+    cooldown_until: AwareDatetime | None = None
     failures: int = 0
-    last_refresh: datetime | None = None
+    last_refresh: AwareDatetime | None = None
+
+    @field_serializer(
+        "accepted_until", "cooldown_until", "last_refresh", when_used="json"
+    )
+    def _ser_ts(self, dt: datetime | None) -> str | None:
+        return iso_z(dt)
 
     def is_eligible(self, now: datetime | None = None) -> bool:
         now = now or utc_now()
@@ -55,18 +76,71 @@ class DisclosurePolicy:
     requester_disclosure: dict[str, str] = field(default_factory=dict)
 
 
+# --- Health / backoff policy -------------------------------------------------
+# Pure functions applied over records; a store persists the result via upsert.
+
+
+@dataclass(frozen=True)
+class CooldownPolicy:
+    """Exponential backoff schedule for peer-refresh failures."""
+
+    base_cooldown: timedelta = timedelta(seconds=30)
+    max_cooldown: timedelta = timedelta(minutes=10)
+
+    def next_cooldown(self, failures: int) -> timedelta:
+        multiplier = 1 << max(failures - 1, 0)  # 2 ** (failures - 1), int-typed
+        return min(self.base_cooldown * multiplier, self.max_cooldown)
+
+
+DEFAULT_COOLDOWN_POLICY = CooldownPolicy()
+
+
+def admit(rec: MemberRecord, accepted_until: datetime | None = None) -> MemberRecord:
+    """Mark a record admitted/active, clearing failure and cooldown state."""
+
+    rec.state = PeerState.ACTIVE
+    rec.accepted_until = accepted_until
+    rec.failures = 0
+    rec.cooldown_until = None
+    return rec
+
+
+def set_state(rec: MemberRecord, state: PeerState) -> MemberRecord:
+    rec.state = state
+    return rec
+
+
+def record_success(rec: MemberRecord) -> MemberRecord:
+    rec.failures = 0
+    rec.cooldown_until = None
+    if rec.state == PeerState.COOLDOWN:
+        rec.state = PeerState.ACTIVE
+    return rec
+
+
+def record_failure(
+    rec: MemberRecord,
+    policy: CooldownPolicy = DEFAULT_COOLDOWN_POLICY,
+    now: datetime | None = None,
+) -> MemberRecord:
+    now = now or utc_now()
+    rec.failures += 1
+    rec.cooldown_until = now + policy.next_cooldown(rec.failures)
+    return rec
+
+
+def eligible_peers(
+    store: MembershipStore, now: datetime | None = None
+) -> list[MemberRecord]:
+    now = now or utc_now()
+    return [r for r in store.values() if r.is_eligible(now)]
+
+
 class MembershipTable:
-    def __init__(
-        self,
-        *,
-        max_failures: int = 3,
-        base_cooldown: timedelta = timedelta(seconds=30),
-        max_cooldown: timedelta = timedelta(minutes=10),
-    ) -> None:
+    """In-memory reference ``MembershipStore`` (optional default / test double)."""
+
+    def __init__(self) -> None:
         self._peers: dict[str, MemberRecord] = {}
-        self.max_failures = max_failures
-        self.base_cooldown = base_cooldown
-        self.max_cooldown = max_cooldown
 
     def get(self, node_id: str) -> MemberRecord | None:
         return self._peers.get(node_id)
@@ -75,48 +149,8 @@ class MembershipTable:
         self._peers[rec.node_id] = rec
         return rec
 
-    def admit(self, rec: MemberRecord, accepted_until: datetime | None = None) -> None:
-        rec.state = PeerState.ACTIVE
-        rec.accepted_until = accepted_until
-        rec.failures = 0
-        rec.cooldown_until = None
-        self._peers[rec.node_id] = rec
-
-    def reject(self, node_id: str) -> None:
-        self._set_state(node_id, PeerState.REJECTED)
-
-    def revoke(self, node_id: str) -> None:
-        self._set_state(node_id, PeerState.REVOKED)
-
-    def mark_stale(self, node_id: str) -> None:
-        self._set_state(node_id, PeerState.STALE_MANIFEST)
-
-    def record_success(self, node_id: str) -> None:
-        rec = self._peers.get(node_id)
-        if rec is None:
-            return
-        rec.failures = 0
-        rec.cooldown_until = None
-        if rec.state == PeerState.COOLDOWN:
-            rec.state = PeerState.ACTIVE
-
-    def record_failure(self, node_id: str, now: datetime | None = None) -> None:
-        rec = self._peers.get(node_id)
-        if rec is None:
-            return
-        now = now or utc_now()
-        rec.failures += 1
-        backoff = min(self.base_cooldown * (2 ** (rec.failures - 1)), self.max_cooldown)
-        rec.cooldown_until = now + backoff
-
-    def eligible_peers(self, now: datetime | None = None) -> list[MemberRecord]:
-        now = now or utc_now()
-        return [r for r in self._peers.values() if r.is_eligible(now)]
-
-    def _set_state(self, node_id: str, state: PeerState) -> None:
-        rec = self._peers.get(node_id)
-        if rec is not None:
-            rec.state = state
+    def values(self) -> list[MemberRecord]:
+        return list(self._peers.values())
 
 
 def disclose_members(
@@ -153,5 +187,5 @@ def apply_revocation_notice(
     jwk = trusted_issuer_keys.get(notice.signature.key_id)
     if jwk is None or not verify_revocation_notice(notice, jwk):
         return rec.state
-    table.revoke(notice.revoked_node_id)
+    table.upsert(set_state(rec, PeerState.REVOKED))
     return rec.state

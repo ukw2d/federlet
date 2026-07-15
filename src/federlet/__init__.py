@@ -56,12 +56,18 @@ from .fanout import (
 )
 from .health import PeerHealthProbeResult, probe_peer_health
 from .membership import (
+    CooldownPolicy,
     DisclosurePolicy,
     MemberRecord,
     MembershipTable,
     PeerState,
+    admit,
     apply_revocation_notice,
     disclose_members,
+    eligible_peers,
+    record_failure,
+    record_success,
+    set_state,
 )
 from .models import (
     AdmissionEvidence,
@@ -176,11 +182,17 @@ __all__ = [
     "fan_out_operation",
     "PeerHealthProbeResult",
     "probe_peer_health",
+    "CooldownPolicy",
     "DisclosurePolicy",
     "MemberRecord",
     "MembershipTable",
     "PeerState",
+    "admit",
     "apply_revocation_notice",
+    "eligible_peers",
+    "record_failure",
+    "record_success",
+    "set_state",
     "disclose_members",
     "AdmissionEvidence",
     "Disclosure",

@@ -17,9 +17,16 @@ from .admission import (
 from .bootstrap import SeedBootstrapReport, bootstrap_from_seeds
 from .client import FederationClient
 from .discovery import DiscoveryRefreshReport, refresh_discovered_members
-from .membership import MemberRecord, MembershipTable
+from .membership import (
+    MemberRecord,
+    MembershipTable,
+    PeerState,
+    admit,
+    eligible_peers,
+    set_state,
+)
 from .models import IntroduceRequest, IntroduceResponse, Manifest
-from .protocols import NonceCache
+from .protocols import MembershipStore, NonceCache
 from .refresh import (
     ManifestRefreshDecision,
     refresh_peer_manifest,
@@ -42,6 +49,12 @@ class FederationNode:
     This class owns no HTTP routes, background jobs, durable persistence, or
     authorization logic. It binds common node identity/configuration once and
     delegates to the functional helpers that remain independently public.
+
+    Membership state lives behind ``membership_table`` (a ``MembershipStore``
+    port; inject a durable adapter for production). ``peer_manifests`` is an
+    in-memory map that inbound verification relies on, so a host must rehydrate
+    both at startup — otherwise ``verify_known_inbound`` rejects known peers
+    until their manifests are re-fetched.
     """
 
     node_id: str
@@ -50,7 +63,7 @@ class FederationNode:
     key_id: str
     admission_policy: AdmissionPolicy
     manifest_revision: int = 0
-    membership_table: MembershipTable = field(default_factory=MembershipTable)
+    membership_table: MembershipStore = field(default_factory=MembershipTable)
     peer_manifests: dict[str, Manifest] = field(default_factory=dict)
     nonce_cache: NonceCache | None = None
     allow_private: bool = False
@@ -231,7 +244,7 @@ class FederationNode:
     ) -> dict[str, ManifestRefreshDecision]:
         targets = []
         decisions: dict[str, ManifestRefreshDecision] = {}
-        for rec in list(self.membership_table.eligible_peers()):
+        for rec in list(eligible_peers(self.membership_table)):
             manifest = self.peer_manifests.get(rec.node_id)
             if manifest is None:
                 decision = ManifestRefreshDecision("reject", "unknown_peer")
@@ -255,18 +268,20 @@ class FederationNode:
     def select_peers(self, *, now: datetime | None = None) -> list[Manifest]:
         return [
             self.peer_manifests[rec.node_id]
-            for rec in self.membership_table.eligible_peers(now)
+            for rec in eligible_peers(self.membership_table, now)
             if rec.node_id in self.peer_manifests
         ]
 
     def _record_peer(self, manifest: Manifest, manifest_url: str) -> None:
         self.peer_manifests[manifest.node_id] = manifest
-        self.membership_table.admit(
-            MemberRecord(
-                node_id=manifest.node_id,
-                org_id=manifest.org_id,
-                manifest_url=manifest_url,
-                manifest_revision=manifest.revision,
+        self.membership_table.upsert(
+            admit(
+                MemberRecord(
+                    node_id=manifest.node_id,
+                    org_id=manifest.org_id,
+                    manifest_url=manifest_url,
+                    manifest_revision=manifest.revision,
+                )
             )
         )
 
@@ -280,8 +295,10 @@ class FederationNode:
             self.peer_manifests[node_id] = decision.manifest
             if rec is not None:
                 rec.manifest_revision = decision.manifest.revision
-                self.membership_table.admit(rec)
+                self.membership_table.upsert(admit(rec))
         elif decision.action == "quarantine":
-            self.membership_table.mark_stale(node_id)
+            if rec is not None:
+                self.membership_table.upsert(set_state(rec, PeerState.STALE_MANIFEST))
         elif decision.action == "reject":
-            self.membership_table.reject(node_id)
+            if rec is not None:
+                self.membership_table.upsert(set_state(rec, PeerState.REJECTED))

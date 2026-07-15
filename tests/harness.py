@@ -31,7 +31,9 @@ from federlet import (
     MembersResponse,
     PublicKey,
     SignedRequest,
+    admit,
     disclose_members,
+    eligible_peers,
     generate_key,
     public_jwk,
     sign_manifest,
@@ -111,23 +113,25 @@ class FederationNode:
     def _admit(self, manifest: Manifest) -> None:
         self.peers[manifest.node_id] = manifest
         assert manifest.manifest_url is not None
-        self.membership_table.admit(
-            MemberRecord(
-                node_id=manifest.node_id,
-                manifest_url=manifest.manifest_url,
-                org_id=manifest.org_id,
-                manifest_revision=manifest.revision,
+        self.membership_table.upsert(
+            admit(
+                MemberRecord(
+                    node_id=manifest.node_id,
+                    manifest_url=manifest.manifest_url,
+                    org_id=manifest.org_id,
+                    manifest_revision=manifest.revision,
+                )
             )
         )
         self._log(
             f"membership table now: {sorted(self.peers)} "
-            f"(eligible={[r.node_id for r in self.membership_table.eligible_peers()]})"
+            f"(eligible={[r.node_id for r in eligible_peers(self.membership_table)]})"
         )
 
     def eligible_peer_manifests(self) -> list[Manifest]:
         return [
             self.peers[r.node_id]
-            for r in self.membership_table.eligible_peers()
+            for r in eligible_peers(self.membership_table)
             if r.node_id in self.peers
         ]
 
@@ -231,7 +235,7 @@ class FederationNode:
             return 401, {"error": reason}
         self._log(f"  → disclosing {len(self.peers)} peer(s): {sorted(self.peers)}")
         members = disclose_members(
-            self.membership_table.eligible_peers(),
+            eligible_peers(self.membership_table),
             requester_node_id="",
             policy=DisclosurePolicy(),
         )
