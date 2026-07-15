@@ -2156,8 +2156,7 @@ async def test_refresh_all_returns_decisions_without_persistence():
         rejected.node_id: 12,
     }
     assert {
-        rec.node_id: (rec.state, rec.manifest_revision)
-        for rec in eligible_peers(table)
+        rec.node_id: (rec.state, rec.manifest_revision) for rec in eligible_peers(table)
     } == {
         unchanged.node_id: (PeerState.ACTIVE, 12),
         accepted.node_id: (PeerState.ACTIVE, 12),
@@ -2422,7 +2421,9 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
     table = MembershipTable()
     table.upsert(
         admit(
-            MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+            MemberRecord(
+                node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
+            )
         )
     )
     client = FederationClient(
@@ -2510,7 +2511,9 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
     table = MembershipTable()
     table.upsert(
         admit(
-            MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+            MemberRecord(
+                node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
+            )
         )
     )
     client = FederationClient(
@@ -2601,7 +2604,9 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
     table = MembershipTable()
     table.upsert(
         admit(
-            MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+            MemberRecord(
+                node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
+            )
         )
     )
     client = FederationClient(
@@ -2685,7 +2690,9 @@ async def test_refresh_discovered_members_enforces_per_peer_cap():
     table = MembershipTable()
     table.upsert(
         admit(
-            MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+            MemberRecord(
+                node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
+            )
         )
     )
     client = FederationClient(
@@ -2827,7 +2834,9 @@ async def test_refresh_discovered_members_skips_node_id_mismatch():
     table = MembershipTable()
     table.upsert(
         admit(
-            MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+            MemberRecord(
+                node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
+            )
         )
     )
     client = FederationClient(
@@ -2902,7 +2911,9 @@ async def test_refresh_discovered_members_isolates_fetch_failures():
     table = MembershipTable()
     table.upsert(
         admit(
-            MemberRecord(node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json")
+            MemberRecord(
+                node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
+            )
         )
     )
     client = FederationClient(
@@ -3103,9 +3114,7 @@ def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
     table.upsert(
-        admit(
-            MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json")
-        )
+        admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     )
     notice = sign_model(
         RevocationNotice(
@@ -3134,9 +3143,7 @@ def test_apply_revocation_notice_ignores_untrusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
     table.upsert(
-        admit(
-            MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json")
-        )
+        admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     )
     notice = sign_model(
         RevocationNotice(
@@ -3165,9 +3172,7 @@ def test_apply_revocation_notice_ignores_wrong_federation():
     issuer_key = generate_key()
     table = MembershipTable()
     table.upsert(
-        admit(
-            MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json")
-        )
+        admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     )
     notice = sign_model(
         RevocationNotice(
