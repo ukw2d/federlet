@@ -10,7 +10,7 @@ from ..models import ManifestLimits
 class RateLimiter(Protocol):
     """Per-peer rate-limit port for host-provided backends."""
 
-    def allow(self, peer_node_id: str, *, now: float) -> bool:
+    async def allow(self, peer_node_id: str, *, now: float) -> bool:
         """Return True when the peer may spend one request token."""
         ...
 
@@ -28,7 +28,7 @@ class TokenBucketRateLimiter:
         self._peer_limits = dict(peer_limits)
         self._buckets: dict[str, _Bucket] = {}
 
-    def allow(self, peer_node_id: str, *, now: float) -> bool:
+    async def allow(self, peer_node_id: str, *, now: float) -> bool:
         limits = self._peer_limits.get(peer_node_id)
         rate = limits.max_operation_rps_per_peer if limits else None
         if rate is None:

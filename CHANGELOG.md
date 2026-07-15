@@ -9,6 +9,43 @@ backwards-compatible bugfixes and documentation-only updates.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-15
+
+### Added
+
+- Added async `ManifestStore` as a write-through durability port for admitted
+  peer manifests. `FederationNode` now accepts `manifest_store=...`, hydrates an
+  empty `peer_manifests` cache via `await hydrate()` / `async with`, and
+  persists admitted, discovered, and refreshed manifests through the store.
+- Added durable manifest eviction on refresh reject and trusted node-level
+  revocation so rejected/revoked peers do not survive restart through a stale
+  persisted manifest.
+- Added a per-node lifecycle lock around membership/manifest mutations to avoid
+  revoke/admit interleavings that could resurrect a revoked manifest.
+
+### Changed
+
+- **Breaking:** `MembershipStore` is now fully async. Implementors must expose
+  `async get`, `async upsert`, `async values`, and `async delete`; federlet
+  callers now await membership reads/writes.
+- **Breaking:** `RateLimiter.allow` is now async so Redis/Valkey-backed
+  distributed limiters do not block the event loop.
+- `eligible_peers`, `apply_revocation_notice`, and `FederationNode.select_peers`
+  are async because they touch async membership storage.
+- `verify_known_inbound` remains a lockless in-memory `peer_manifests` read and
+  never calls the durable manifest store on the inbound request path.
+
+### Migration notes
+
+- Update durable membership adapters to async methods and add `delete(node_id)`.
+- Update rate limiter adapters to `async allow(...)` and await calls to
+  `TokenBucketRateLimiter.allow(...)`.
+- If using `FederationNode` with durable manifests, pass
+  `manifest_store=adapter` and either use `async with FederationNode(...)` or
+  call `await node.hydrate()` before serving inbound requests.
+- Plakard x39 should pin `federlet>=0.6` and implement one async cashews-backed
+  adapter satisfying both `MembershipStore` and `ManifestStore`.
+
 ## [0.4.0] - 2026-07-13
 
 ### Changed
@@ -135,7 +172,8 @@ backwards-compatible bugfixes and documentation-only updates.
   membership stores.
 - Typed package metadata via `py.typed`.
 
-[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ukw2d/federlet/compare/v0.4.0...v0.6.0
 [0.4.0]: https://github.com/ukw2d/federlet/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ukw2d/federlet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ukw2d/federlet/compare/v0.1.0...v0.2.0

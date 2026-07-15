@@ -104,7 +104,7 @@ application policy. Those belong to the host application.
 | Manifests | Pydantic wire models, fetch-time verification, signing, freshness checks | key lifecycle, publication URL, revision policy |
 | Signed requests | envelope creation and verification | request routing and response handling |
 | Replay protection | `NonceCache` protocol and nonce-claim logic | the cache object passed at verification time |
-| Rate limiting | `RateLimiter` protocol and in-memory `TokenBucketRateLimiter` | distributed per-peer limiter state |
+| Rate limiting | async `RateLimiter` protocol and in-memory `TokenBucketRateLimiter` | distributed per-peer limiter state |
 | Admission | policy checks and verifier callback port | trust material and evidence validation rules |
 | Federation calls | async `httpx` helpers for manifests, introductions, and members | peer selection, retries policy, logging, metrics |
 | Server | no server | your HTTP stack, routing, middleware, and deployment runtime |
@@ -296,10 +296,10 @@ is claimed only after the signature, target, method, path, timestamp, and body
 hash are valid. Failed unauthenticated requests do not consume nonces.
 
 For per-peer request throttling, hosts can inject anything that implements the
-`RateLimiter` protocol. `TokenBucketRateLimiter` is an in-memory reference
-implementation that reads `Manifest.limits.max_operation_rps_per_peer`; production
-deployments should keep the bucket state in Redis, Valkey, or an equivalent
-shared store.
+async `RateLimiter` protocol (`await allow(peer_node_id, now=...)`).
+`TokenBucketRateLimiter` is an in-memory reference implementation that reads
+`Manifest.limits.max_operation_rps_per_peer`; production deployments should keep
+the bucket state in Redis, Valkey, or an equivalent shared store.
 
 For audit logging, `audit_record(...)` builds a flat ADR-shaped dict with an
 ISO-Z timestamp. Feed that dict to your JSON logger, JSONL sink, or SIEM
@@ -373,18 +373,19 @@ references. federlet only signs and verifies the protocol exchange.
 | `federlet.urls` | `well_known_url` joiner for caller-supplied base and path; federlet hardcodes no paths. |
 | `federlet.net` | SSRF guard for manifest and endpoint URLs. |
 | `federlet.client` | Async `httpx` helpers for manifest fetch, introduction, members, revocations, protocol, health, and operation calls. |
-| `federlet.protocols` | Structural protocols such as `NonceCache`, `RateLimiter`, and `MembershipStore` (thin `get`/`upsert`/`values` CRUD port) for redis/SQL-backed hosts. |
+| `federlet.protocols` | Structural protocols such as `NonceCache`, async `RateLimiter`, async `MembershipStore`, and async `ManifestStore` for redis/SQL/Valkey-backed hosts. |
 
 ## Membership durability
 
 federlet keeps a functional core and pushes all persistence to the host. Two
 concerns split cleanly:
 
-- **Storage is a host-owned port.** `MembershipStore` is a thin CRUD interface —
-  `get(node_id)`, `upsert(record)`, `values()`. A host backs it with redis, SQL,
-  or a JSON file in roughly ten lines. `MembershipTable` is the optional
-  in-memory reference implementation (a default and test double); it is *not*
-  required and holds no policy.
+- **Storage is a host-owned async port.** `MembershipStore` is a thin CRUD
+  interface — `await get(node_id)`, `await upsert(record)`, `await values()`,
+  and `await delete(node_id)`. A host backs it with redis, SQL, Valkey, or a JSON
+  file in roughly ten lines. `MembershipTable` is the optional in-memory
+  reference implementation (a default and test double); it is *not* required and
+  holds no policy.
 - **Policy is federlet-owned.** Admission, exponential backoff, and eligibility
   are pure functions — `admit`, `record_success`, `record_failure` (with
   `CooldownPolicy`), `set_state`, and `eligible_peers` — that federlet applies
@@ -395,20 +396,39 @@ concerns split cleanly:
 The application-facing pattern is always read → apply policy → persist:
 
 ```python
-rec = store.get(node_id)
+rec = await store.get(node_id)
 if rec is not None:
-    store.upsert(record_failure(rec, cooldown_policy))
+    await store.upsert(record_failure(rec, cooldown_policy))
 ```
 
-### Manifest persistence is host-owned too
+### Manifest persistence
 
-There is a durability port for *members* but deliberately none for *manifests*.
-Inbound verification (`verify_known_inbound`) reads the node's `peer_manifests`
-map, so a host that restarts with an empty map will reject known peers until it
-re-fetches them. **Hosts must rehydrate `peer_manifests` at startup**, alongside
-loading membership records into their `MembershipStore` adapter. `Manifest` is a
-Pydantic wire model, so persist it with the same `model_dump`/`model_validate`
-round-trip used for `MemberRecord`.
+Manifest durability is intentionally asymmetric with membership durability:
+
+- `MembershipStore` is the cold working set for membership state.
+- `ManifestStore` is an async write-through sink plus a startup hydration source.
+  It has `upsert(manifest)`, `delete(node_id)`, and `values()`, but no point-wise
+  `get`.
+
+Inbound verification (`verify_known_inbound`) stays on the hot in-memory
+`peer_manifests` map; it never calls the durable store. If you pass
+`manifest_store=...` to `FederationNode`, admitted/refreshed manifests are
+persisted write-through, refresh rejects and trusted revocations evict them from
+both cache and store, and `async with FederationNode(...)` calls `hydrate()` to
+populate an empty cache from `await manifest_store.values()` at startup.
+
+Hosts that do not use the context manager can call `await node.hydrate()` before
+serving inbound requests. Plakard-style adapters can implement both ports on one
+backend:
+
+```python
+store = build_peer_store(cfg.peer_store)
+node = FederationNode(..., membership_table=store, manifest_store=store)
+await node.hydrate()
+```
+
+For Plakard x39, pin `federlet>=0.6` and implement one async cashews-backed
+adapter for both `MembershipStore` and `ManifestStore`.
 
 ## Usage scenarios
 

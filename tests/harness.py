@@ -103,6 +103,12 @@ class FederationNode:
         assert self._loop is not None
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
+    def _run_async(self, coro: Awaitable[T]) -> T:
+        """Run async federlet helpers from this sync stdlib test harness."""
+        if self._loop is not None:
+            return self._run(coro)
+        return asyncio.run(coro)
+
     # --- peer bookkeeping ---------------------------------------------------
 
     def seed(self, other: FederationNode) -> None:
@@ -113,25 +119,28 @@ class FederationNode:
     def _admit(self, manifest: Manifest) -> None:
         self.peers[manifest.node_id] = manifest
         assert manifest.manifest_url is not None
-        self.membership_table.upsert(
-            admit(
-                MemberRecord(
-                    node_id=manifest.node_id,
-                    manifest_url=manifest.manifest_url,
-                    org_id=manifest.org_id,
-                    manifest_revision=manifest.revision,
+        self._run_async(
+            self.membership_table.upsert(
+                admit(
+                    MemberRecord(
+                        node_id=manifest.node_id,
+                        manifest_url=manifest.manifest_url,
+                        org_id=manifest.org_id,
+                        manifest_revision=manifest.revision,
+                    )
                 )
             )
         )
+        eligible = self._run_async(eligible_peers(self.membership_table))
         self._log(
             f"membership table now: {sorted(self.peers)} "
-            f"(eligible={[r.node_id for r in eligible_peers(self.membership_table)]})"
+            f"(eligible={[r.node_id for r in eligible]})"
         )
 
     def eligible_peer_manifests(self) -> list[Manifest]:
         return [
             self.peers[r.node_id]
-            for r in eligible_peers(self.membership_table)
+            for r in self._run_async(eligible_peers(self.membership_table))
             if r.node_id in self.peers
         ]
 
@@ -235,7 +244,7 @@ class FederationNode:
             return 401, {"error": reason}
         self._log(f"  → disclosing {len(self.peers)} peer(s): {sorted(self.peers)}")
         members = disclose_members(
-            eligible_peers(self.membership_table),
+            self._run_async(eligible_peers(self.membership_table)),
             requester_node_id="",
             policy=DisclosurePolicy(),
         )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -16,6 +18,7 @@ from .admission import (
 )
 from .bootstrap import SeedBootstrapReport, bootstrap_from_seeds
 from .client import FederationClient
+from .crypto import JWK
 from .discovery import DiscoveryRefreshReport, refresh_discovered_members
 from .membership import (
     MemberRecord,
@@ -25,8 +28,11 @@ from .membership import (
     eligible_peers,
     set_state,
 )
-from .models import IntroduceRequest, IntroduceResponse, Manifest
-from .protocols import MembershipStore, NonceCache
+from .membership import (
+    apply_revocation_notice as apply_membership_revocation_notice,
+)
+from .models import IntroduceRequest, IntroduceResponse, Manifest, RevocationNotice
+from .protocols import ManifestStore, MembershipStore, NonceCache
 from .refresh import (
     ManifestRefreshDecision,
     refresh_peer_manifest,
@@ -51,10 +57,9 @@ class FederationNode:
     delegates to the functional helpers that remain independently public.
 
     Membership state lives behind ``membership_table`` (a ``MembershipStore``
-    port; inject a durable adapter for production). ``peer_manifests`` is an
-    in-memory map that inbound verification relies on, so a host must rehydrate
-    both at startup — otherwise ``verify_known_inbound`` rejects known peers
-    until their manifests are re-fetched.
+    port; inject a durable adapter for production). ``peer_manifests`` is the
+    hot inbound verification cache. Optionally inject ``manifest_store`` as an
+    async write-through sink and startup hydration source for that cache.
     """
 
     node_id: str
@@ -64,12 +69,15 @@ class FederationNode:
     admission_policy: AdmissionPolicy
     manifest_revision: int = 0
     membership_table: MembershipStore = field(default_factory=MembershipTable)
+    manifest_store: ManifestStore | None = None
     peer_manifests: dict[str, Manifest] = field(default_factory=dict)
     nonce_cache: NonceCache | None = None
     allow_private: bool = False
     http_client: httpx.AsyncClient | None = None
+    _lifecycle_lock: asyncio.Lock = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._lifecycle_lock = asyncio.Lock()
         self.client = FederationClient(
             node_id=self.node_id,
             federation_id=self.federation_id,
@@ -81,6 +89,7 @@ class FederationNode:
         )
 
     async def __aenter__(self) -> FederationNode:
+        await self.hydrate()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -88,6 +97,16 @@ class FederationNode:
 
     async def close(self) -> None:
         await self.client.close()
+
+    async def hydrate(self) -> None:
+        """Hydrate peer manifest cache from the optional durable store."""
+
+        async with self._lifecycle_lock:
+            if self.manifest_store is not None and not self.peer_manifests:
+                self.peer_manifests = {
+                    manifest.node_id: manifest
+                    for manifest in await self.manifest_store.values()
+                }
 
     async def verify_inbound(
         self,
@@ -161,7 +180,7 @@ class FederationNode:
             resolved_url = manifest_url or manifest.manifest_url
             if resolved_url is None:
                 return decision
-            self._record_peer(manifest, resolved_url)
+            await self._record_peer(manifest, resolved_url)
         return decision
 
     async def introduce_to(
@@ -191,7 +210,9 @@ class FederationNode:
         )
         for outcome in report.accepted:
             if outcome.seed_manifest is not None:
-                self._record_peer(outcome.seed_manifest, outcome.seed_manifest_url)
+                await self._record_peer(
+                    outcome.seed_manifest, outcome.seed_manifest_url
+                )
         return report
 
     async def discover(
@@ -212,7 +233,8 @@ class FederationNode:
         )
         for outcome in report.accepted:
             if outcome.manifest is not None:
-                self.peer_manifests[outcome.manifest.node_id] = outcome.manifest
+                async with self._lifecycle_lock:
+                    await self._remember_manifest(outcome.manifest)
         return report
 
     async def refresh_peer(
@@ -222,7 +244,7 @@ class FederationNode:
         key_continuity_policy: KeyContinuityPolicy | None = None,
         max_skew_seconds: int = 300,
     ) -> ManifestRefreshDecision:
-        rec = self.membership_table.get(node_id)
+        rec = await self.membership_table.get(node_id)
         manifest = self.peer_manifests.get(node_id)
         if rec is None or manifest is None:
             return ManifestRefreshDecision("reject", "unknown_peer")
@@ -233,7 +255,7 @@ class FederationNode:
             key_continuity_policy=key_continuity_policy,
             max_skew_seconds=max_skew_seconds,
         )
-        self._apply_refresh_decision(node_id, decision)
+        await self._apply_refresh_decision(node_id, decision)
         return decision
 
     async def refresh_all(
@@ -244,12 +266,12 @@ class FederationNode:
     ) -> dict[str, ManifestRefreshDecision]:
         targets = []
         decisions: dict[str, ManifestRefreshDecision] = {}
-        for rec in list(eligible_peers(self.membership_table)):
+        for rec in list(await eligible_peers(self.membership_table)):
             manifest = self.peer_manifests.get(rec.node_id)
             if manifest is None:
                 decision = ManifestRefreshDecision("reject", "unknown_peer")
                 decisions[rec.node_id] = decision
-                self._apply_refresh_decision(rec.node_id, decision)
+                await self._apply_refresh_decision(rec.node_id, decision)
                 continue
             targets.append((manifest, rec.manifest_url))
 
@@ -262,43 +284,82 @@ class FederationNode:
             )
         )
         for node_id, decision in decisions.items():
-            self._apply_refresh_decision(node_id, decision)
+            await self._apply_refresh_decision(node_id, decision)
         return decisions
 
-    def select_peers(self, *, now: datetime | None = None) -> list[Manifest]:
+    async def select_peers(self, *, now: datetime | None = None) -> list[Manifest]:
         return [
             self.peer_manifests[rec.node_id]
-            for rec in eligible_peers(self.membership_table, now)
+            for rec in await eligible_peers(self.membership_table, now)
             if rec.node_id in self.peer_manifests
         ]
 
-    def _record_peer(self, manifest: Manifest, manifest_url: str) -> None:
-        self.peer_manifests[manifest.node_id] = manifest
-        self.membership_table.upsert(
-            admit(
-                MemberRecord(
-                    node_id=manifest.node_id,
-                    org_id=manifest.org_id,
-                    manifest_url=manifest_url,
-                    manifest_revision=manifest.revision,
+    async def apply_revocation_notice(
+        self,
+        notice: RevocationNotice,
+        *,
+        trusted_issuer_keys: Mapping[str, JWK],
+    ) -> PeerState | None:
+        """Apply a trusted revocation notice and evict the revoked manifest."""
+
+        async with self._lifecycle_lock:
+            state = await apply_membership_revocation_notice(
+                self.membership_table,
+                notice,
+                federation_id=self.federation_id,
+                trusted_issuer_keys=trusted_issuer_keys,
+            )
+            if state is PeerState.REVOKED:
+                await self._forget_manifest(notice.revoked_node_id)
+            return state
+
+    async def _record_peer(self, manifest: Manifest, manifest_url: str) -> None:
+        async with self._lifecycle_lock:
+            await self._remember_manifest(manifest)
+            await self.membership_table.upsert(
+                admit(
+                    MemberRecord(
+                        node_id=manifest.node_id,
+                        org_id=manifest.org_id,
+                        manifest_url=manifest_url,
+                        manifest_revision=manifest.revision,
+                    )
                 )
             )
-        )
 
-    def _apply_refresh_decision(
+    async def _apply_refresh_decision(
         self,
         node_id: str,
         decision: ManifestRefreshDecision,
     ) -> None:
-        rec = self.membership_table.get(node_id)
-        if decision.action in {"accept", "unchanged"} and decision.manifest is not None:
-            self.peer_manifests[node_id] = decision.manifest
-            if rec is not None:
-                rec.manifest_revision = decision.manifest.revision
-                self.membership_table.upsert(admit(rec))
-        elif decision.action == "quarantine":
-            if rec is not None:
-                self.membership_table.upsert(set_state(rec, PeerState.STALE_MANIFEST))
-        elif decision.action == "reject":
-            if rec is not None:
-                self.membership_table.upsert(set_state(rec, PeerState.REJECTED))
+        async with self._lifecycle_lock:
+            rec = await self.membership_table.get(node_id)
+            if (
+                decision.action in {"accept", "unchanged"}
+                and decision.manifest is not None
+            ):
+                await self._remember_manifest(decision.manifest)
+                if rec is not None:
+                    rec.manifest_revision = decision.manifest.revision
+                    await self.membership_table.upsert(admit(rec))
+            elif decision.action == "quarantine":
+                if rec is not None:
+                    await self.membership_table.upsert(
+                        set_state(rec, PeerState.STALE_MANIFEST)
+                    )
+            elif decision.action == "reject":
+                if rec is not None:
+                    await self.membership_table.upsert(
+                        set_state(rec, PeerState.REJECTED)
+                    )
+                await self._forget_manifest(node_id)
+
+    async def _remember_manifest(self, manifest: Manifest) -> None:
+        self.peer_manifests[manifest.node_id] = manifest
+        if self.manifest_store is not None:
+            await self.manifest_store.upsert(manifest)
+
+    async def _forget_manifest(self, node_id: str) -> None:
+        self.peer_manifests.pop(node_id, None)
+        if self.manifest_store is not None:
+            await self.manifest_store.delete(node_id)

@@ -1,7 +1,8 @@
 """Local membership: a thin storage default plus federlet-owned health policy.
 
-The durability seam is the ``MembershipStore`` port (see ``protocols``): a host
-implements dumb CRUD (``get``/``upsert``/``values``) backed by redis/SQL/json.
+The durability seam is the async ``MembershipStore`` port (see ``protocols``):
+a host implements dumb CRUD (``get``/``upsert``/``values``/``delete``) backed
+by redis/SQL/json.
 Admission, backoff, and eligibility are *policy* — pure functions federlet
 applies over the records a store holds, never methods an adapter must supply.
 ``MembershipTable`` is the optional in-memory reference implementation.
@@ -129,11 +130,11 @@ def record_failure(
     return rec
 
 
-def eligible_peers(
+async def eligible_peers(
     store: MembershipStore, now: datetime | None = None
 ) -> list[MemberRecord]:
     now = now or utc_now()
-    return [r for r in store.values() if r.is_eligible(now)]
+    return [r for r in await store.values() if r.is_eligible(now)]
 
 
 class MembershipTable:
@@ -142,15 +143,18 @@ class MembershipTable:
     def __init__(self) -> None:
         self._peers: dict[str, MemberRecord] = {}
 
-    def get(self, node_id: str) -> MemberRecord | None:
+    async def get(self, node_id: str) -> MemberRecord | None:
         return self._peers.get(node_id)
 
-    def upsert(self, rec: MemberRecord) -> MemberRecord:
+    async def upsert(self, rec: MemberRecord) -> MemberRecord:
         self._peers[rec.node_id] = rec
         return rec
 
-    def values(self) -> list[MemberRecord]:
+    async def values(self) -> list[MemberRecord]:
         return list(self._peers.values())
+
+    async def delete(self, node_id: str) -> None:
+        self._peers.pop(node_id, None)
 
 
 def disclose_members(
@@ -172,14 +176,14 @@ def disclose_members(
     ]
 
 
-def apply_revocation_notice(
+async def apply_revocation_notice(
     table: MembershipStore,
     notice: RevocationNotice,
     *,
     federation_id: str,
     trusted_issuer_keys: Mapping[str, JWK],
 ) -> PeerState | None:
-    rec = table.get(notice.revoked_node_id)
+    rec = await table.get(notice.revoked_node_id)
     if rec is None:
         return None
     if notice.federation_id != federation_id or notice.signature is None:
@@ -187,5 +191,5 @@ def apply_revocation_notice(
     jwk = trusted_issuer_keys.get(notice.signature.key_id)
     if jwk is None or not verify_revocation_notice(notice, jwk):
         return rec.state
-    table.upsert(set_state(rec, PeerState.REVOKED))
+    await table.upsert(set_state(rec, PeerState.REVOKED))
     return rec.state

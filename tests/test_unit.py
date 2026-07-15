@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -27,6 +28,7 @@ from federlet import (
     Manifest,
     ManifestLimits,
     ManifestRefreshDecision,
+    ManifestStore,
     ManifestVerificationError,
     MemberRecord,
     MemberRef,
@@ -126,6 +128,36 @@ class RecordingNonceCache:
         return True
 
 
+class FakeManifestStore:
+    def __init__(self, manifests: list[Manifest] | None = None) -> None:
+        self.manifests = {m.node_id: m for m in manifests or []}
+        self.upserts: list[Manifest] = []
+        self.deletes: list[str] = []
+
+    async def upsert(self, manifest: Manifest) -> None:
+        self.manifests[manifest.node_id] = manifest
+        self.upserts.append(manifest)
+
+    async def delete(self, node_id: str) -> None:
+        self.manifests.pop(node_id, None)
+        self.deletes.append(node_id)
+
+    async def values(self) -> list[Manifest]:
+        return list(self.manifests.values())
+
+
+class BlockingManifestStore(FakeManifestStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.upsert_started = asyncio.Event()
+        self.allow_upsert = asyncio.Event()
+
+    async def upsert(self, manifest: Manifest) -> None:
+        self.upsert_started.set()
+        await self.allow_upsert.wait()
+        await super().upsert(manifest)
+
+
 def _manifest(key, key_id="k1", **extra) -> Manifest:
     data = {
         "node_id": "node:org-a:prod",
@@ -147,6 +179,22 @@ def _discovery_policy() -> AdmissionPolicy:
         federation_id="f",
         protocol_versions={"example-federation/1"},
         require_expires_at=False,
+    )
+
+
+def _facade_node(
+    *,
+    membership_table: MembershipTable | None = None,
+    manifest_store: ManifestStore | None = None,
+) -> FederationNode:
+    return FederationNode(
+        node_id="node:local:prod",
+        federation_id="f",
+        key=generate_key(),
+        key_id="local-k1",
+        admission_policy=_discovery_policy(),
+        membership_table=membership_table or MembershipTable(),
+        manifest_store=manifest_store,
     )
 
 
@@ -839,42 +887,42 @@ def test_revocation_notice_round_trips_and_verifies():
     assert RevocationsResponse(source_node_id="node:org-a:prod", notices=[notice])
 
 
-def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
+async def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
     limiter: RateLimiter = TokenBucketRateLimiter(
         {
             "node:org-a:prod": ManifestLimits(max_operation_rps_per_peer=2),
         }
     )
 
-    assert limiter.allow("node:org-a:prod", now=0.0)
-    assert limiter.allow("node:org-a:prod", now=0.0)
-    assert not limiter.allow("node:org-a:prod", now=0.0)
+    assert await limiter.allow("node:org-a:prod", now=0.0)
+    assert await limiter.allow("node:org-a:prod", now=0.0)
+    assert not await limiter.allow("node:org-a:prod", now=0.0)
 
 
-def test_token_bucket_rate_limiter_refills_over_time():
+async def test_token_bucket_rate_limiter_refills_over_time():
     limiter = TokenBucketRateLimiter(
         {
             "node:org-a:prod": ManifestLimits(max_operation_rps_per_peer=2),
         }
     )
 
-    assert limiter.allow("node:org-a:prod", now=0.0)
-    assert limiter.allow("node:org-a:prod", now=0.0)
-    assert not limiter.allow("node:org-a:prod", now=0.25)
-    assert limiter.allow("node:org-a:prod", now=0.5)
-    assert not limiter.allow("node:org-a:prod", now=0.5)
+    assert await limiter.allow("node:org-a:prod", now=0.0)
+    assert await limiter.allow("node:org-a:prod", now=0.0)
+    assert not await limiter.allow("node:org-a:prod", now=0.25)
+    assert await limiter.allow("node:org-a:prod", now=0.5)
+    assert not await limiter.allow("node:org-a:prod", now=0.5)
 
 
-def test_token_bucket_rate_limiter_treats_missing_limit_as_unbounded():
+async def test_token_bucket_rate_limiter_treats_missing_limit_as_unbounded():
     limiter = TokenBucketRateLimiter(
         {
             "node:org-a:prod": ManifestLimits(),
         }
     )
 
-    assert limiter.allow("unknown", now=0.0)
-    assert limiter.allow("node:org-a:prod", now=0.0)
-    assert limiter.allow("node:org-a:prod", now=0.0)
+    assert await limiter.allow("unknown", now=0.0)
+    assert await limiter.allow("node:org-a:prod", now=0.0)
+    assert await limiter.allow("node:org-a:prod", now=0.0)
 
 
 async def test_signed_request_roundtrip_and_replay(cache):
@@ -2116,7 +2164,7 @@ async def test_refresh_all_returns_decisions_without_persistence():
         ("/rejected.json", rejected),
     ]:
         manifest_url = f"http://127.0.0.1{path}"
-        table.upsert(
+        await table.upsert(
             admit(
                 MemberRecord(
                     node_id=manifest.node_id,
@@ -2156,7 +2204,8 @@ async def test_refresh_all_returns_decisions_without_persistence():
         rejected.node_id: 12,
     }
     assert {
-        rec.node_id: (rec.state, rec.manifest_revision) for rec in eligible_peers(table)
+        rec.node_id: (rec.state, rec.manifest_revision)
+        for rec in await eligible_peers(table)
     } == {
         unchanged.node_id: (PeerState.ACTIVE, 12),
         accepted.node_id: (PeerState.ACTIVE, 12),
@@ -2419,7 +2468,7 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
         return httpx.Response(404, json={"error": "not_found"})
 
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
@@ -2458,7 +2507,7 @@ async def test_refresh_discovered_members_admits_new_peer_from_seed_hint():
     assert not report.rejected
     assert not report.skipped
     assert not report.failed
-    rec = table.get(discovered.node_id)
+    rec = await table.get(discovered.node_id)
     assert rec is not None
     assert rec.state == PeerState.ACTIVE
     assert rec.manifest_url == "http://127.0.0.1/new.json"
@@ -2509,7 +2558,7 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
         )
 
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
@@ -2545,7 +2594,7 @@ async def test_refresh_discovered_members_rejects_by_local_policy():
             "wrong_federation",
         )
     ]
-    assert table.get(rejected_manifest.node_id) is None
+    assert await table.get(rejected_manifest.node_id) is None
 
 
 async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hints():
@@ -2602,7 +2651,7 @@ async def test_refresh_discovered_members_skips_self_existing_and_duplicate_hint
         raise AssertionError(f"unexpected fetch: {request.url}")
 
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
@@ -2688,7 +2737,7 @@ async def test_refresh_discovered_members_enforces_per_peer_cap():
         )
 
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
@@ -2756,7 +2805,7 @@ async def test_refresh_discovered_members_reports_ssrf_rejected_manifest_url():
         )
 
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=seed.node_id, manifest_url="https://seed.example/manifest.json"
@@ -2832,7 +2881,7 @@ async def test_refresh_discovered_members_skips_node_id_mismatch():
         )
 
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
@@ -2860,7 +2909,7 @@ async def test_refresh_discovered_members_skips_node_id_mismatch():
     assert [(o.node_id, o.reason) for o in report.skipped] == [
         ("node:expected:prod", "node_id_mismatch")
     ]
-    assert table.get("node:expected:prod") is None
+    assert await table.get("node:expected:prod") is None
 
 
 async def test_refresh_discovered_members_isolates_fetch_failures():
@@ -2909,7 +2958,7 @@ async def test_refresh_discovered_members_isolates_fetch_failures():
         return httpx.Response(404, json={"error": "not_found"})
 
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=seed.node_id, manifest_url="http://127.0.0.1/seed.json"
@@ -2940,7 +2989,205 @@ async def test_refresh_discovered_members_isolates_fetch_failures():
         ("node:bad-json:prod", "malformed_manifest"),
     ]
     assert [o.node_id for o in report.accepted] == [good.node_id]
-    assert table.get(good.node_id) is not None
+    assert await table.get(good.node_id) is not None
+
+
+async def test_federation_node_hydrates_manifest_store_for_known_inbound():
+    peer_key = generate_key()
+    peer = _discoverable_manifest(
+        peer_key,
+        "peer-k1",
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore([peer])
+
+    async with _facade_node(manifest_store=store) as node:
+        assert node.peer_manifests == {peer.node_id: peer}
+        env = build_signed_request(
+            peer_key,
+            "peer-k1",
+            federation_id="f",
+            source_node_id=peer.node_id,
+            target_node_id=node.node_id,
+            method="GET",
+            path="/federation/v1/members",
+            body=b"",
+        )
+
+        verified = await node.verify_known_inbound(
+            signature_header=env.model_dump_json(exclude_none=True),
+            source_node_id=peer.node_id,
+            method="GET",
+            path="/federation/v1/members",
+            body=b"",
+        )
+
+    assert verified.source_node_id == peer.node_id
+
+
+async def test_federation_node_manifest_store_none_keeps_dict_only_behavior():
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    node = _facade_node()
+
+    decision = await node.admit_peer(peer)
+
+    assert decision.accepted
+    assert node.peer_manifests == {peer.node_id: peer}
+    rec = await node.membership_table.get(peer.node_id)
+    assert rec is not None
+    assert rec.state is PeerState.ACTIVE
+
+
+async def test_federation_node_write_through_manifest_on_admit():
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+
+    decision = await node.admit_peer(peer)
+
+    assert decision.accepted
+    assert store.upserts == [peer]
+    assert store.manifests == {peer.node_id: peer}
+
+
+async def test_federation_node_refresh_accept_persists_latest_manifest_revision():
+    peer_key = generate_key()
+    peer = _discoverable_manifest(
+        peer_key,
+        "peer-k1",
+        node_id="node:peer:prod",
+        revision=12,
+        manifest_url="https://peer.example/manifest.json",
+    )
+    refreshed = _discoverable_manifest(
+        peer_key,
+        "peer-k1",
+        node_id=peer.node_id,
+        revision=13,
+        manifest_url=peer.manifest_url,
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.admit_peer(peer)
+    store.upserts.clear()
+
+    await node._apply_refresh_decision(
+        peer.node_id,
+        ManifestRefreshDecision("accept", manifest=refreshed, new_revision=13),
+    )
+
+    assert store.upserts == [refreshed]
+    rec = await node.membership_table.get(peer.node_id)
+    assert rec is not None
+    assert rec.manifest_revision == 13
+
+
+async def test_federation_node_refresh_reject_evicts_manifest_cache_and_store():
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.admit_peer(peer)
+
+    await node._apply_refresh_decision(
+        peer.node_id,
+        ManifestRefreshDecision("reject", "revision_rollback", old_revision=12),
+    )
+
+    assert peer.node_id not in node.peer_manifests
+    assert store.deletes == [peer.node_id]
+    rec = await node.membership_table.get(peer.node_id)
+    assert rec is not None
+    assert rec.state is PeerState.REJECTED
+
+
+async def test_federation_node_revocation_evicts_manifest_cache_and_store():
+    issuer_key = generate_key()
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.admit_peer(peer)
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id=peer.node_id,
+            reason="removed",
+            issued_at=datetime.now(UTC),
+            issuer="node:issuer:prod",
+        ),
+        issuer_key,
+        "issuer-k1",
+    )
+
+    state = await node.apply_revocation_notice(
+        notice,
+        trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+    )
+
+    assert state is PeerState.REVOKED
+    assert peer.node_id not in node.peer_manifests
+    assert store.deletes == [peer.node_id]
+    rec = await node.membership_table.get(peer.node_id)
+    assert rec is not None
+    assert rec.state is PeerState.REVOKED
+
+
+async def test_federation_node_lifecycle_lock_prevents_revocation_resurrection():
+    issuer_key = generate_key()
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = BlockingManifestStore()
+    node = _facade_node(manifest_store=store)
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id=peer.node_id,
+            reason="removed",
+            issued_at=datetime.now(UTC),
+            issuer="node:issuer:prod",
+        ),
+        issuer_key,
+        "issuer-k1",
+    )
+
+    admit_task = asyncio.create_task(node.admit_peer(peer))
+    await store.upsert_started.wait()
+    revoke_task = asyncio.create_task(
+        node.apply_revocation_notice(
+            notice,
+            trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+        )
+    )
+    await asyncio.sleep(0)
+    store.allow_upsert.set()
+
+    decision = await admit_task
+    state = await revoke_task
+
+    assert decision.accepted
+    assert state is PeerState.REVOKED
+    assert peer.node_id not in node.peer_manifests
+    assert store.upserts == [peer]
+    assert store.deletes == [peer.node_id]
 
 
 def test_public_crypto_and_signing_helpers_are_exported():
@@ -3007,21 +3254,33 @@ def test_audit_record_omits_none_optional_fields():
     assert "decision" not in record
 
 
-def test_membership_cooldown_and_recovery():
+async def test_membership_cooldown_and_recovery():
     policy = CooldownPolicy(base_cooldown=timedelta(seconds=1))
     t = MembershipTable()
-    t.upsert(MemberRecord(node_id="n", manifest_url="https://x/m.json"))
-    t.upsert(admit(t.get("n")))
-    assert [r.node_id for r in eligible_peers(t)] == ["n"]
+    await t.upsert(MemberRecord(node_id="n", manifest_url="https://x/m.json"))
+    rec = await t.get("n")
+    assert rec is not None
+    await t.upsert(admit(rec))
+    assert [r.node_id for r in await eligible_peers(t)] == ["n"]
 
-    t.upsert(record_failure(t.get("n"), policy))
-    t.upsert(record_failure(t.get("n"), policy))
-    assert t.get("n").state == PeerState.ACTIVE
-    assert eligible_peers(t) == []  # in cooldown -> not queried
+    rec = await t.get("n")
+    assert rec is not None
+    await t.upsert(record_failure(rec, policy))
+    rec = await t.get("n")
+    assert rec is not None
+    await t.upsert(record_failure(rec, policy))
+    rec = await t.get("n")
+    assert rec is not None
+    assert rec.state == PeerState.ACTIVE
+    assert await eligible_peers(t) == []  # in cooldown -> not queried
 
-    t.upsert(record_success(t.get("n")))
-    assert t.get("n").state == PeerState.ACTIVE
-    assert len(eligible_peers(t)) == 1
+    rec = await t.get("n")
+    assert rec is not None
+    await t.upsert(record_success(rec))
+    rec = await t.get("n")
+    assert rec is not None
+    assert rec.state == PeerState.ACTIVE
+    assert len(await eligible_peers(t)) == 1
 
 
 def test_member_record_json_round_trips_all_fields():
@@ -3101,19 +3360,25 @@ def test_disclose_members_applies_requester_specific_disclosure():
     assert refs[0].disclosure == "partner"
 
 
-def test_revoked_peer_is_never_eligible():
+async def test_revoked_peer_is_never_eligible():
     t = MembershipTable()
-    t.upsert(MemberRecord(node_id="n", manifest_url="https://x/m.json"))
-    t.upsert(admit(t.get("n")))
-    t.upsert(set_state(t.get("n"), PeerState.REVOKED))
-    assert t.get("n").state == PeerState.REVOKED
-    assert eligible_peers(t) == []
+    await t.upsert(MemberRecord(node_id="n", manifest_url="https://x/m.json"))
+    rec = await t.get("n")
+    assert rec is not None
+    await t.upsert(admit(rec))
+    rec = await t.get("n")
+    assert rec is not None
+    await t.upsert(set_state(rec, PeerState.REVOKED))
+    rec = await t.get("n")
+    assert rec is not None
+    assert rec.state == PeerState.REVOKED
+    assert await eligible_peers(t) == []
 
 
-def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
+async def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     )
     notice = sign_model(
@@ -3128,7 +3393,7 @@ def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
         "issuer-k1",
     )
 
-    state = apply_revocation_notice(
+    state = await apply_revocation_notice(
         table,
         notice,
         federation_id="f",
@@ -3136,13 +3401,15 @@ def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
     )
 
     assert state == PeerState.REVOKED
-    assert table.get("node:org-b:prod").state == PeerState.REVOKED
+    rec = await table.get("node:org-b:prod")
+    assert rec is not None
+    assert rec.state == PeerState.REVOKED
 
 
-def test_apply_revocation_notice_ignores_untrusted_issuer():
+async def test_apply_revocation_notice_ignores_untrusted_issuer():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     )
     notice = sign_model(
@@ -3157,7 +3424,7 @@ def test_apply_revocation_notice_ignores_untrusted_issuer():
         "issuer-k1",
     )
 
-    state = apply_revocation_notice(
+    state = await apply_revocation_notice(
         table,
         notice,
         federation_id="f",
@@ -3165,13 +3432,15 @@ def test_apply_revocation_notice_ignores_untrusted_issuer():
     )
 
     assert state == PeerState.ACTIVE
-    assert table.get("node:org-b:prod").state == PeerState.ACTIVE
+    rec = await table.get("node:org-b:prod")
+    assert rec is not None
+    assert rec.state == PeerState.ACTIVE
 
 
-def test_apply_revocation_notice_ignores_wrong_federation():
+async def test_apply_revocation_notice_ignores_wrong_federation():
     issuer_key = generate_key()
     table = MembershipTable()
-    table.upsert(
+    await table.upsert(
         admit(MemberRecord(node_id="node:org-b:prod", manifest_url="https://x/m.json"))
     )
     notice = sign_model(
@@ -3186,7 +3455,7 @@ def test_apply_revocation_notice_ignores_wrong_federation():
         "issuer-k1",
     )
 
-    state = apply_revocation_notice(
+    state = await apply_revocation_notice(
         table,
         notice,
         federation_id="f",
@@ -3194,10 +3463,12 @@ def test_apply_revocation_notice_ignores_wrong_federation():
     )
 
     assert state == PeerState.ACTIVE
-    assert table.get("node:org-b:prod").state == PeerState.ACTIVE
+    rec = await table.get("node:org-b:prod")
+    assert rec is not None
+    assert rec.state == PeerState.ACTIVE
 
 
-def test_apply_revocation_notice_ignores_unknown_peer():
+async def test_apply_revocation_notice_ignores_unknown_peer():
     issuer_key = generate_key()
     table = MembershipTable()
     notice = sign_model(
@@ -3212,7 +3483,7 @@ def test_apply_revocation_notice_ignores_unknown_peer():
         "issuer-k1",
     )
 
-    state = apply_revocation_notice(
+    state = await apply_revocation_notice(
         table,
         notice,
         federation_id="f",

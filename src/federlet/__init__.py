@@ -102,6 +102,7 @@ from .operations import (
     verify_operation_item,
 )
 from .protocols import (
+    ManifestStore,
     MembershipStore,
     NonceCache,
     RateLimiter,
@@ -213,6 +214,7 @@ __all__ = [
     "Signature",
     "SignedRequest",
     "EvidenceVerifier",
+    "ManifestStore",
     "MembershipStore",
     "NonceCache",
     "RateLimiter",

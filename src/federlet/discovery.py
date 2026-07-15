@@ -69,7 +69,7 @@ async def refresh_discovered_members(
     seen_node_ids: set[str] = set()
     seen_manifest_urls: set[str] = set()
 
-    for rec in eligible_peers(table):
+    for rec in await eligible_peers(table):
         peer_manifest = peer_manifests.get(rec.node_id)
         if peer_manifest is None:
             outcomes.failed.append(_outcome_from_record(rec, "missing_peer_manifest"))
@@ -93,7 +93,7 @@ async def refresh_discovered_members(
             if ref.node_id == client.node_id:
                 outcomes.skipped.append(_with_reason(outcome, "self"))
                 continue
-            if table.get(ref.node_id) is not None:
+            if await table.get(ref.node_id) is not None:
                 outcomes.skipped.append(_with_reason(outcome, "existing_peer"))
                 continue
             if ref.node_id in seen_node_ids or ref.manifest_url in seen_manifest_urls:
@@ -150,7 +150,7 @@ async def _process_ref(
         outcomes.rejected.append(_with_manifest(base, decision.reason, manifest))
         return
 
-    table.upsert(
+    await table.upsert(
         admit(
             MemberRecord(
                 node_id=manifest.node_id,

@@ -230,11 +230,11 @@ async def test_stateful_facade_drives_bootstrap_discover_refresh_and_verify(
             o.seed_manifest.node_id for o in bootstrap.accepted if o.seed_manifest
         ]
         assert accepted_seed_ids == [org_a.node_id]
-        assert facade.select_peers() == [org_a.manifest]
+        assert await facade.select_peers() == [org_a.manifest]
 
         discovery = await facade.discover()
         assert [o.node_id for o in discovery.accepted] == [org_b.node_id]
-        assert {m.node_id for m in facade.select_peers()} == {
+        assert {m.node_id for m in await facade.select_peers()} == {
             org_a.node_id,
             org_b.node_id,
         }
