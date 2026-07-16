@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TypeVar
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -117,6 +117,69 @@ def verify_response_signature(peer_manifest: Manifest, response: BaseModel) -> b
 
 def verify_revocation_notice(notice: RevocationNotice, jwk: JWK) -> bool:
     return verify_model(notice, jwk)
+
+
+def build_revocation(
+    *,
+    revoked_node_id: str,
+    issuer: str,
+    federation_id: str,
+    key: Ed25519PrivateKey,
+    key_id: str,
+    reason: str,
+    issued_at: datetime | None = None,
+    expires_at: datetime | None = None,
+) -> RevocationNotice:
+    """Build and sign a :class:`RevocationNotice`.
+
+    Canonical signing helper for hosts publishing revocations: it removes the
+    boilerplate of constructing the model and calling :func:`sign_model`, and
+    keeps the signed canonical form in one place. The returned notice
+    round-trips through :func:`verify_revocation_notice` and
+    :func:`apply_revocation_notice` (given a ``trusted_issuer_keys`` entry for
+    ``key_id`` and an ``authorize`` predicate that permits this issuer).
+
+    For self-revocation (``issuer == revoked_node_id == node_id``) prefer
+    :func:`build_self_revocation`.
+    """
+
+    notice = RevocationNotice(
+        federation_id=federation_id,
+        revoked_node_id=revoked_node_id,
+        reason=reason,
+        issued_at=issued_at or utc_now(),
+        expires_at=expires_at,
+        issuer=issuer,
+    )
+    return sign_model(notice, key, key_id)
+
+
+def build_self_revocation(
+    node_id: str,
+    federation_id: str,
+    key: Ed25519PrivateKey,
+    key_id: str,
+    *,
+    reason: str,
+    expires_at: datetime | None = None,
+) -> RevocationNotice:
+    """Build and sign a self-scoped :class:`RevocationNotice`.
+
+    Shorthand for :func:`build_revocation` with ``issuer == revoked_node_id ==
+    node_id``: the shape the default :func:`self_scoped_authorize` predicate
+    accepts without any host policy. This is the common case for cooperative
+    departure (a node signing itself out of the federation).
+    """
+
+    return build_revocation(
+        revoked_node_id=node_id,
+        issuer=node_id,
+        federation_id=federation_id,
+        key=key,
+        key_id=key_id,
+        reason=reason,
+        expires_at=expires_at,
+    )
 
 
 # --- Signed request envelopes ------------------------------------------------

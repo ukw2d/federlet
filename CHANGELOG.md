@@ -9,6 +9,52 @@ backwards-compatible bugfixes and documentation-only updates.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-16
+
+### Added
+
+- Added an `authorize: Callable[[RevocationNotice], bool]` predicate to
+  `apply_revocation_notice` (membership layer) and
+  `FederationNode.apply_revocation_notice`. It gates the **semantic**
+  relationship between a notice's `issuer` and its `revoked_node_id` (who may
+  revoke whom), complementing the existing **cryptographic** authenticity gate
+  (`trusted_issuer_keys` + `verify_revocation_notice`). Defaults to
+  `self_scoped_authorize` (`issuer == revoked_node_id`), the safe behavior a
+  host gets without supplying any policy. The predicate signature is stable so
+  existing self-revocation callers keep working untouched.
+- Added signed mint helpers `build_revocation` and `build_self_revocation`
+  alongside `verify_revocation_notice`. They remove signing boilerplate from
+  hosts and keep canonical signing in one place; their output round-trips
+  through `verify_revocation_notice` and `apply_revocation_notice`.
+- Exported `self_scoped_authorize`, `build_revocation`, and
+  `build_self_revocation` via `federlet`, `federlet.prelude`, and
+  `federlet.lowlevel`.
+
+### Changed
+
+- **Breaking:** `apply_revocation_notice` and
+  `FederationNode.apply_revocation_notice` now **reject cross-node revocation
+  notices by default** (notices where `issuer != revoked_node_id`) even when
+  the signature is valid under a trusted key. Previously any notice signed by a
+  trusted key was applied. This tightens the default trust posture: a
+  compromised peer can no longer forge a notice revoking another node. Hosts
+  that relied on the old permissive behavior (or that need cross-authority
+  revocation to evict a compromised node that will never self-revoke) must pass
+  an `authorize` closure built from their authority config.
+
+### Migration notes
+
+- If you called `apply_revocation_notice` / `FederationNode.apply_revocation_notice`
+  with self-scoped notices (`issuer == revoked_node_id`), no change is needed —
+  that path still applies by default.
+- If you published or applied cross-node notices (`issuer != revoked_node_id`),
+  pass `authorize=lambda n: True` (or a scope-aware closure) to restore the
+  previous behavior. Prefer building a host-owned authority policy: federlet
+  intentionally defines no authority/scope taxonomy.
+- Prefer `build_self_revocation` / `build_revocation` over hand-rolling
+  `RevocationNotice` + `sign_model`; the helpers produce the canonical signed
+  shape both gates expect.
+
 ## [0.6.0] - 2026-07-15
 
 ### Added
@@ -172,7 +218,8 @@ backwards-compatible bugfixes and documentation-only updates.
   membership stores.
 - Typed package metadata via `py.typed`.
 
-[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ukw2d/federlet/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ukw2d/federlet/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/ukw2d/federlet/compare/v0.4.0...v0.6.0
 [0.4.0]: https://github.com/ukw2d/federlet/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ukw2d/federlet/compare/v0.2.0...v0.3.0

@@ -17,6 +17,8 @@ from .crypto import (
 )
 from .models import Signature, SignedRequest
 from .signing import (
+    build_revocation,
+    build_self_revocation,
     build_signed_request,
     check_body_size,
     find_jwk,
@@ -34,6 +36,8 @@ __all__ = [
     "SignedRequest",
     "b64u_decode",
     "b64u_encode",
+    "build_revocation",
+    "build_self_revocation",
     "build_signed_request",
     "canonical_bytes",
     "check_body_size",

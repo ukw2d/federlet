@@ -269,3 +269,18 @@ manifest `extensions`, so the caller supplies it; federlet resolves no paths.
 - Manifest fetch and admission can reject private, loopback, link-local, and
   reserved endpoints by default.
 - Admission evidence is host-defined and evaluated locally.
+- **Revocation applies only after two independent gates pass.**
+  `apply_revocation_notice` checks (1) **cryptographic authenticity** via
+  `trusted_issuer_keys` + `verify_revocation_notice`, and (2) **semantic
+  authorization** via an `authorize: Callable[[RevocationNotice], bool]`
+  predicate that defaults to `self_scoped_authorize` (`issuer ==
+  revoked_node_id`). Both must pass; the caller is responsible for ensuring a
+  `key_id` in `trusted_issuer_keys` belongs to the claimed `issuer`. The
+  default rejects cross-node notices even with a valid signature, blocking a
+  compromised peer from forging a notice about another node. A host enables
+  cross-authority revocation (the only way to evict a compromised node that
+  will never self-revoke) by passing its own `authorize` closure built from its
+  authority config. **federlet defines no authority/scope taxonomy** — no
+  federation-vs-org semantics, registry, or config; that policy is host-owned,
+  and federlet only calls the predicate. `build_revocation` /
+  `build_self_revocation` produce the signed canonical notices both gates expect.

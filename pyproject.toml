@@ -1,6 +1,6 @@
 [project]
 name = "federlet"
-version = "0.6.1"
+version = "0.8.0"
 description = "Async Python library for decentralized, hubless federation between peer services."
 readme = "README.md"
 license = "Apache-2.0"

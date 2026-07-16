@@ -68,6 +68,7 @@ from .membership import (
     parse_since_cursor,
     record_failure,
     record_success,
+    self_scoped_authorize,
     set_state,
 )
 from .models import (
@@ -125,6 +126,8 @@ from .responses import (
 from .signing import (
     UnauthorizedPeerRequest,
     VerifiedPeer,
+    build_revocation,
+    build_self_revocation,
     build_signed_request,
     check_body_size,
     check_manifest,
@@ -194,6 +197,7 @@ __all__ = [
     "eligible_peers",
     "record_failure",
     "record_success",
+    "self_scoped_authorize",
     "set_state",
     "disclose_members",
     "parse_since_cursor",
@@ -238,6 +242,8 @@ __all__ = [
     "sign_members_response",
     "sign_operation_response",
     "sign_revocations_response",
+    "build_revocation",
+    "build_self_revocation",
     "build_signed_request",
     "check_body_size",
     "check_manifest",

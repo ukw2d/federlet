@@ -430,6 +430,53 @@ await node.hydrate()
 For Plakard x39, pin `federlet>=0.6` and implement one async cashews-backed
 adapter for both `MembershipStore` and `ManifestStore`.
 
+### Revocation trust model
+
+`apply_revocation_notice` (and the `FederationNode.apply_revocation_notice`
+facade) applies a notice only after **two independent gates** pass:
+
+1. **Cryptographic authenticity** — `trusted_issuer_keys` +
+   `verify_revocation_notice` prove the notice was signed by a key the caller
+   trusts. The caller is responsible for ensuring a `key_id` in
+   `trusted_issuer_keys` genuinely belongs to the claimed `issuer`/authority;
+   federlet maintains no key-to-identity registry.
+2. **Semantic authorization** — an `authorize: Callable[[RevocationNotice], bool]`
+   predicate decides whether this `issuer` is allowed to revoke this
+   `revoked_node_id`. It defaults to `self_scoped_authorize`, which requires
+   `issuer == revoked_node_id` (the safe behavior a host gets without supplying
+   any policy).
+
+The default is deliberately restrictive: a cross-node notice (`issuer !=
+revoked_node_id`) is **rejected even with a valid signature**. This stops a
+compromised peer from forging a notice about another node. To enable
+**cross-authority revocation** — the only way to evict a compromised or hostile
+node that will never self-revoke — pass an `authorize` closure built from your
+own authority config:
+
+```python
+async def revoke_compromised(node, authority_key, peer_id):
+    notice = build_revocation(
+        revoked_node_id=peer_id,
+        issuer=authority_key.node_id,
+        federation_id=node.federation_id,
+        key=authority_key.private_key,
+        key_id=authority_key.key_id,
+        reason="compromised",
+    )
+    return await node.apply_revocation_notice(
+        notice,
+        trusted_issuer_keys=authority_key.trusted_keys,
+        authorize=lambda n: n.issuer in my_authorities,  # host-owned policy
+    )
+```
+
+federlet **never defines what "authority" or "scope" means** — no federation
+vs. org taxonomy, no authority registry, no config. The host builds the
+`authorize` closure; federlet only calls it. Use `build_self_revocation` for
+the common cooperative-departure case and `build_revocation` for the
+cross-authority case; both produce signed notices that round-trip through
+`verify_revocation_notice` and `apply_revocation_notice`.
+
 ## Usage scenarios
 
 ### Scenario: existing peers exchange membership
@@ -663,6 +710,8 @@ from federlet import (
     apply_revocation_notice,
     bootstrap_from_seeds,
     build_operation_item,
+    build_revocation,
+    build_self_revocation,
     build_signed_manifest,
     b64u_decode,
     b64u_encode,
@@ -679,6 +728,7 @@ from federlet import (
     public_key_from_jwk,
     refresh_discovered_members,
     refresh_peer_manifest,
+    self_scoped_authorize,
     sha256_hex,
     sign_dict,
     sign_introduce_response,

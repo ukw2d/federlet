@@ -22,7 +22,7 @@ from .fanout import (
     OperationTarget,
     fan_out_operation,
 )
-from .membership import MembershipTable
+from .membership import MembershipTable, self_scoped_authorize
 from .models import Manifest, Membership, PublicKey
 from .node import FederationNode
 from .operations import (
@@ -46,6 +46,8 @@ from .responses import (
 from .signing import (
     UnauthorizedPeerRequest,
     VerifiedPeer,
+    build_revocation,
+    build_self_revocation,
     check_manifest,
     sign_manifest,
     verify_peer_request,
@@ -78,6 +80,8 @@ __all__ = [
     "VerifiedPeer",
     "admit_manifest",
     "bootstrap_from_seeds",
+    "build_revocation",
+    "build_self_revocation",
     "certificate_thumbprint",
     "verify_certificate_identity",
     "fan_out_operation",
@@ -94,5 +98,6 @@ __all__ = [
     "sign_revocations_response",
     "verify_peer_request",
     "verify_operation_item",
+    "self_scoped_authorize",
     "well_known_url",
 ]

@@ -60,6 +60,8 @@ from federlet import (
     b64u_encode,
     bootstrap_from_seeds,
     build_operation_item,
+    build_revocation,
+    build_self_revocation,
     build_signed_manifest,
     build_signed_request,
     canonical_bytes,
@@ -79,6 +81,7 @@ from federlet import (
     refresh_all,
     refresh_discovered_members,
     refresh_peer_manifest,
+    self_scoped_authorize,
     set_state,
     sha256_hex,
     sign_introduce_response,
@@ -889,6 +892,242 @@ def test_revocation_notice_round_trips_and_verifies():
         RevocationNotice.model_validate(wire), public_jwk(key)
     )
     assert RevocationsResponse(source_node_id="node:org-a:prod", notices=[notice])
+
+
+def test_self_scoped_authorize_only_accepts_issuer_equals_revoked_node():
+    self_scoped = RevocationNotice(
+        federation_id="f",
+        revoked_node_id="node:org-a:prod",
+        reason="removed",
+        issued_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
+        issuer="node:org-a:prod",
+    )
+    cross_node = RevocationNotice(
+        federation_id="f",
+        revoked_node_id="node:org-b:prod",
+        reason="compromised",
+        issued_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
+        issuer="node:authority:prod",
+    )
+
+    assert self_scoped_authorize(self_scoped) is True
+    assert self_scoped_authorize(cross_node) is False
+
+
+def test_build_revocation_produces_signed_notice_that_verifies():
+    key = generate_key()
+    issued = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+    expires = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
+
+    notice = build_revocation(
+        revoked_node_id="node:org-b:prod",
+        issuer="node:org-a:prod",
+        federation_id="f",
+        key=key,
+        key_id="org-a-k1",
+        reason="compromised",
+        issued_at=issued,
+        expires_at=expires,
+    )
+
+    assert notice.signature is not None
+    assert notice.signature.key_id == "org-a-k1"
+    assert notice.issuer == "node:org-a:prod"
+    assert notice.revoked_node_id == "node:org-b:prod"
+    assert verify_revocation_notice(notice, public_jwk(key))
+    # Wire round-trips: the canonical form survives serialization.
+    assert verify_revocation_notice(
+        RevocationNotice.model_validate(notice.model_dump(mode="json")),
+        public_jwk(key),
+    )
+    # A different key must not verify.
+    assert not verify_revocation_notice(notice, public_jwk(generate_key()))
+
+
+def test_build_revocation_defaults_issued_at_to_now_when_omitted():
+    key = generate_key()
+    before = datetime.now(UTC)
+
+    notice = build_revocation(
+        revoked_node_id="node:org-b:prod",
+        issuer="node:org-a:prod",
+        federation_id="f",
+        key=key,
+        key_id="org-a-k1",
+        reason="compromised",
+    )
+
+    after = datetime.now(UTC)
+    # ``sign_model`` round-trips through the iso_z serializer, which truncates
+    # to whole seconds, so compare at second precision.
+    assert before.replace(microsecond=0) <= notice.issued_at <= after
+
+
+def test_build_self_revocation_sets_issuer_equal_to_revoked_node_id():
+    key = generate_key()
+
+    notice = build_self_revocation(
+        "node:org-a:prod",
+        "f",
+        key,
+        "org-a-k1",
+        reason="departing",
+        expires_at=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+    )
+
+    assert notice.issuer == "node:org-a:prod"
+    assert notice.revoked_node_id == "node:org-a:prod"
+    assert self_scoped_authorize(notice) is True
+    assert verify_revocation_notice(notice, public_jwk(key))
+
+
+async def test_apply_revocation_notice_default_rejects_cross_node_notice():
+    """A cross-node notice is rejected by default even with a valid signature."""
+
+    key = generate_key()
+    table = MembershipTable()
+    rec = MemberRecord(
+        node_id="node:org-b:prod",
+        manifest_url="https://org-b.example/manifest.json",
+    )
+    await table.upsert(admit(rec))
+    notice = build_revocation(
+        revoked_node_id="node:org-b:prod",
+        issuer="node:authority:prod",
+        federation_id="f",
+        key=key,
+        key_id="authority-k1",
+        reason="compromised",
+    )
+
+    state = await apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"authority-k1": public_jwk(key)},
+    )
+
+    assert state is PeerState.ACTIVE
+    after = await table.get("node:org-b:prod")
+    assert after is not None
+    assert after.state is PeerState.ACTIVE
+
+
+async def test_apply_revocation_notice_applies_cross_node_when_authorized():
+    """With an ``authorize`` permitting it, a cross-node notice is applied."""
+
+    key = generate_key()
+    table = MembershipTable()
+    rec = MemberRecord(
+        node_id="node:org-b:prod",
+        manifest_url="https://org-b.example/manifest.json",
+    )
+    await table.upsert(admit(rec))
+    notice = build_revocation(
+        revoked_node_id="node:org-b:prod",
+        issuer="node:authority:prod",
+        federation_id="f",
+        key=key,
+        key_id="authority-k1",
+        reason="compromised",
+    )
+
+    state = await apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"authority-k1": public_jwk(key)},
+        authorize=lambda n: n.issuer == "node:authority:prod",
+    )
+
+    assert state is PeerState.REVOKED
+    after = await table.get("node:org-b:prod")
+    assert after is not None
+    assert after.state is PeerState.REVOKED
+
+
+async def test_apply_revocation_notice_authorize_false_rejects_self_scoped():
+    """An ``authorize`` returning False rejects even a valid self-scoped notice."""
+
+    key = generate_key()
+    table = MembershipTable()
+    rec = MemberRecord(
+        node_id="node:org-a:prod",
+        manifest_url="https://org-a.example/manifest.json",
+    )
+    await table.upsert(admit(rec))
+    notice = build_self_revocation(
+        "node:org-a:prod", "f", key, "org-a-k1", reason="departing"
+    )
+
+    state = await apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"org-a-k1": public_jwk(key)},
+        authorize=lambda n: False,
+    )
+
+    assert state is PeerState.ACTIVE
+    after = await table.get("node:org-a:prod")
+    assert after is not None
+    assert after.state is PeerState.ACTIVE
+
+
+async def test_apply_revocation_notice_self_scoped_default_still_applies():
+    """Default behavior unchanged: a self-scoped notice applies."""
+
+    key = generate_key()
+    table = MembershipTable()
+    rec = MemberRecord(
+        node_id="node:org-a:prod",
+        manifest_url="https://org-a.example/manifest.json",
+    )
+    await table.upsert(admit(rec))
+    notice = build_self_revocation(
+        "node:org-a:prod", "f", key, "org-a-k1", reason="departing"
+    )
+
+    state = await apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"org-a-k1": public_jwk(key)},
+    )
+
+    assert state is PeerState.REVOKED
+    after = await table.get("node:org-a:prod")
+    assert after is not None
+    assert after.state is PeerState.REVOKED
+
+
+async def test_apply_revocation_notice_successful_revoke_returns_revoked_state():
+    """Return-value contract: a successful revoke returns REVOKED (mutates in place).
+
+    ``set_state`` mutates the record in place, so the returned state reflects the
+    new REVOKED value. The ``FederationNode`` wrapper relies on this to trigger
+    manifest eviction.
+    """
+
+    key = generate_key()
+    table = MembershipTable()
+    rec = MemberRecord(
+        node_id="node:org-a:prod",
+        manifest_url="https://org-a.example/manifest.json",
+    )
+    await table.upsert(admit(rec))
+    notice = build_self_revocation(
+        "node:org-a:prod", "f", key, "org-a-k1", reason="departing"
+    )
+
+    state = await apply_revocation_notice(
+        table,
+        notice,
+        federation_id="f",
+        trusted_issuer_keys={"org-a-k1": public_jwk(key)},
+    )
+
+    assert state is PeerState.REVOKED
 
 
 async def test_token_bucket_rate_limiter_allows_up_to_peer_manifest_rate():
@@ -3142,6 +3381,7 @@ async def test_federation_node_revocation_evicts_manifest_cache_and_store():
     state = await node.apply_revocation_notice(
         notice,
         trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+        authorize=lambda n: True,
     )
 
     assert state is PeerState.REVOKED
@@ -3179,6 +3419,7 @@ async def test_federation_node_lifecycle_lock_prevents_revocation_resurrection()
         node.apply_revocation_notice(
             notice,
             trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+            authorize=lambda n: True,
         )
     )
     await asyncio.sleep(0)
@@ -3191,6 +3432,98 @@ async def test_federation_node_lifecycle_lock_prevents_revocation_resurrection()
     assert state is PeerState.REVOKED
     assert peer.node_id not in node.peer_manifests
     assert store.upserts == [peer]
+    assert store.deletes == [peer.node_id]
+
+
+async def test_federation_node_apply_revocation_default_self_scoped_evicts():
+    """Default authorize at the node level: a self-scoped notice evicts durably."""
+
+    peer_key = generate_key()
+    peer = _discoverable_manifest(
+        peer_key,
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.admit_peer(peer)
+    notice = build_self_revocation(
+        peer.node_id, "f", peer_key, "peer-k1", reason="departing"
+    )
+
+    state = await node.apply_revocation_notice(
+        notice,
+        trusted_issuer_keys={"peer-k1": public_jwk(peer_key)},
+    )
+
+    assert state is PeerState.REVOKED
+    assert peer.node_id not in node.peer_manifests
+    assert store.deletes == [peer.node_id]
+    rec = await node.membership_table.get(peer.node_id)
+    assert rec is not None
+    assert rec.state is PeerState.REVOKED
+
+
+async def test_federation_node_apply_revocation_rejects_cross_node_by_default():
+    """Default authorize at the node level: cross-node notice rejected, no eviction."""
+
+    issuer_key = generate_key()
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.admit_peer(peer)
+    notice = build_revocation(
+        revoked_node_id=peer.node_id,
+        issuer="node:authority:prod",
+        federation_id="f",
+        key=issuer_key,
+        key_id="authority-k1",
+        reason="compromised",
+    )
+
+    state = await node.apply_revocation_notice(
+        notice,
+        trusted_issuer_keys={"authority-k1": public_jwk(issuer_key)},
+    )
+
+    assert state is PeerState.ACTIVE
+    assert peer.node_id in node.peer_manifests
+    assert store.deletes == []
+
+
+async def test_federation_node_apply_revocation_authorize_predicate_applies():
+    """Node-level authorize permitting cross-node revoke evicts durably."""
+
+    issuer_key = generate_key()
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.admit_peer(peer)
+    notice = build_revocation(
+        revoked_node_id=peer.node_id,
+        issuer="node:authority:prod",
+        federation_id="f",
+        key=issuer_key,
+        key_id="authority-k1",
+        reason="compromised",
+    )
+
+    state = await node.apply_revocation_notice(
+        notice,
+        trusted_issuer_keys={"authority-k1": public_jwk(issuer_key)},
+        authorize=lambda n: n.issuer == "node:authority:prod",
+    )
+
+    assert state is PeerState.REVOKED
+    assert peer.node_id not in node.peer_manifests
     assert store.deletes == [peer.node_id]
 
 
@@ -3521,6 +3854,7 @@ async def test_apply_revocation_notice_revokes_known_peer_from_trusted_issuer():
         notice,
         federation_id="f",
         trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+        authorize=lambda n: True,
     )
 
     assert state == PeerState.REVOKED

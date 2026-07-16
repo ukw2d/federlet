@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -26,6 +26,7 @@ from .membership import (
     PeerState,
     admit,
     eligible_peers,
+    self_scoped_authorize,
     set_state,
 )
 from .membership import (
@@ -299,8 +300,16 @@ class FederationNode:
         notice: RevocationNotice,
         *,
         trusted_issuer_keys: Mapping[str, JWK],
+        authorize: Callable[[RevocationNotice], bool] = self_scoped_authorize,
     ) -> PeerState | None:
-        """Apply a trusted revocation notice and evict the revoked manifest."""
+        """Apply a trusted revocation notice and evict the revoked manifest.
+
+        Thin facade over the membership-layer :func:`apply_revocation_notice`:
+        passes the caller's ``authorize`` predicate (defaulting to the safe
+        self-scoped rule) and, when the notice is applied, evicts the revoked
+        node's manifest from both the in-memory cache and any durable
+        ``manifest_store``.
+        """
 
         async with self._lifecycle_lock:
             state = await apply_membership_revocation_notice(
@@ -308,6 +317,7 @@ class FederationNode:
                 notice,
                 federation_id=self.federation_id,
                 trusted_issuer_keys=trusted_issuer_keys,
+                authorize=authorize,
             )
             if state is PeerState.REVOKED:
                 await self._forget_manifest(notice.revoked_node_id)

@@ -10,7 +10,7 @@ applies over the records a store holds, never methods an adapter must supply.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -25,6 +25,23 @@ from .signing import verify_revocation_notice
 
 if TYPE_CHECKING:
     from .protocols import MembershipStore
+
+
+def self_scoped_authorize(notice: RevocationNotice) -> bool:
+    """Default ``authorize`` predicate: a node may only revoke itself.
+
+    The semantic-trust counterpart to ``verify_revocation_notice``: where the
+    signature check proves *who signed*, this proves *who is allowed to revoke
+    whom*. Returning ``False`` rejects the notice regardless of signature.
+
+    The default enforces self-scoped revocation (``issuer == revoked_node_id``),
+    which is the safe behavior a host gets without supplying any policy. A host
+    that wants cross-authority revocation (evicting a compromised node that will
+    never self-revoke) passes its own closure built from its authority config;
+    federlet never defines what "authority" or "scope" means. See ADR-005 §7.
+    """
+
+    return notice.issuer == notice.revoked_node_id
 
 
 class PeerState(str, Enum):
@@ -229,11 +246,37 @@ async def apply_revocation_notice(
     *,
     federation_id: str,
     trusted_issuer_keys: Mapping[str, JWK],
+    authorize: Callable[[RevocationNotice], bool] = self_scoped_authorize,
 ) -> PeerState | None:
+    """Apply a trusted revocation notice to the local membership table.
+
+    Two independent gates must pass before a record is marked ``REVOKED``:
+
+    1. **Cryptographic authenticity** — ``trusted_issuer_keys`` +
+       ``verify_revocation_notice`` prove the notice was signed by the holder of
+       a key the caller trusts. The caller is responsible for ensuring a
+       ``key_id`` in ``trusted_issuer_keys`` genuinely belongs to the claimed
+       ``issuer``/authority (federlet does not maintain a key<->identity
+       registry).
+    2. **Semantic authorization** — ``authorize(notice)`` decides whether this
+       ``issuer`` is allowed to revoke this ``revoked_node_id``. Defaults to
+       :func:`self_scoped_authorize` (``issuer == revoked_node_id``); a host
+       supplies its own closure to permit cross-authority revocation.
+
+    Rejection paths (unknown node, federation mismatch, missing signature,
+    unknown key, bad signature, or ``authorize`` returning ``False``) leave the
+    record untouched and return its prior state. A successful revoke marks the
+    record ``REVOKED`` in place and returns ``PeerState.REVOKED``; the
+    ``FederationNode`` wrapper relies on that return value to evict the cached
+    and durable manifest.
+    """
+
     rec = await table.get(notice.revoked_node_id)
     if rec is None:
         return None
     if notice.federation_id != federation_id or notice.signature is None:
+        return rec.state
+    if not authorize(notice):
         return rec.state
     jwk = trusted_issuer_keys.get(notice.signature.key_id)
     if jwk is None or not verify_revocation_notice(notice, jwk):
