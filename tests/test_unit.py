@@ -70,6 +70,7 @@ from federlet import (
     domain_evidence_verifier,
     eligible_peers,
     generate_key,
+    parse_since_cursor,
     probe_peer_health,
     public_jwk,
     public_key_from_jwk,
@@ -216,7 +217,10 @@ def test_manifest_sign_verify_and_tamper():
 
 def test_build_signed_manifest_builds_standard_verifiable_manifest():
     key = generate_key()
-    issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    # Anchor to the current time so the manifest stays fresh; a hardcoded date
+    # rots once wall-clock passes issued_at + ttl and verify_manifest sees it
+    # as "expired".
+    issued = datetime.now(UTC).replace(microsecond=0)
     manifest = build_signed_manifest(
         key,
         "org-a-k1",
@@ -3358,6 +3362,125 @@ def test_disclose_members_applies_requester_specific_disclosure():
     )
 
     assert refs[0].disclosure == "partner"
+
+
+def test_mutators_stamp_last_refresh():
+    now = datetime(2026, 7, 8, 8, 0, 0, tzinfo=UTC)
+
+    def fresh() -> MemberRecord:
+        return MemberRecord(node_id="n", manifest_url="https://x/m.json")
+
+    assert admit(fresh(), now=now).last_refresh == now
+    assert set_state(fresh(), PeerState.REVOKED, now=now).last_refresh == now
+    assert record_success(fresh(), now=now).last_refresh == now
+    stamped = record_failure(fresh(), CooldownPolicy(), now=now)
+    assert stamped.last_refresh == now
+
+
+def test_mutators_default_now_to_wall_clock():
+    before = datetime.now(UTC)
+    rec = admit(MemberRecord(node_id="n", manifest_url="https://x/m.json"))
+    assert rec.last_refresh is not None
+    assert rec.last_refresh >= before
+
+
+def test_disclose_members_since_returns_only_records_updated_after_cursor():
+    cursor = datetime(2026, 7, 8, 8, 0, 0, tzinfo=UTC)
+    stale = MemberRecord(
+        node_id="node:stale:prod",
+        manifest_url="https://stale.example/manifest.json",
+        last_refresh=cursor - timedelta(minutes=1),
+    )
+    updated = MemberRecord(
+        node_id="node:fresh:prod",
+        manifest_url="https://fresh.example/manifest.json",
+        last_refresh=cursor + timedelta(minutes=1),
+    )
+    at_cursor = MemberRecord(
+        node_id="node:boundary:prod",
+        manifest_url="https://boundary.example/manifest.json",
+        last_refresh=cursor,
+    )
+
+    refs = disclose_members(
+        [stale, updated, at_cursor],
+        requester_node_id="node:requester:prod",
+        policy=DisclosurePolicy(),
+        since=cursor,
+    )
+
+    # strictly-after: the boundary record is not re-disclosed
+    assert [r.node_id for r in refs] == ["node:fresh:prod"]
+
+
+def test_disclose_members_since_includes_records_missing_last_refresh():
+    rec = MemberRecord(
+        node_id="node:unstamped:prod",
+        manifest_url="https://unstamped.example/manifest.json",
+    )
+    assert rec.last_refresh is None
+
+    refs = disclose_members(
+        [rec],
+        requester_node_id="node:requester:prod",
+        policy=DisclosurePolicy(),
+        since=datetime(2026, 7, 8, 8, 0, 0, tzinfo=UTC),
+    )
+
+    assert [r.node_id for r in refs] == ["node:unstamped:prod"]
+
+
+def test_disclose_members_since_none_discloses_full_set():
+    rec = MemberRecord(
+        node_id="node:org-a:prod",
+        manifest_url="https://a.example/manifest.json",
+        last_refresh=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+
+    refs = disclose_members(
+        [rec],
+        requester_node_id="node:requester:prod",
+        policy=DisclosurePolicy(),
+    )
+
+    assert [r.node_id for r in refs] == ["node:org-a:prod"]
+
+
+def test_parse_since_cursor_accepts_iso_string_and_datetime():
+    aware = datetime(2026, 7, 8, 8, 0, 0, tzinfo=UTC)
+    assert parse_since_cursor("2026-07-08T08:00:00Z") == aware
+    assert parse_since_cursor("2026-07-08T08:00:00+00:00") == aware
+    assert parse_since_cursor(aware) is aware
+
+
+def test_parse_since_cursor_rejects_naive_and_garbage():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        parse_since_cursor(datetime(2026, 7, 8, 8, 0, 0))
+    with pytest.raises(ValueError, match="invalid since cursor"):
+        parse_since_cursor("not-a-timestamp")
+
+
+def test_disclose_members_rejects_invalid_since_cursor():
+    rec = MemberRecord(node_id="n", manifest_url="https://x/m.json")
+    with pytest.raises(ValueError):
+        disclose_members(
+            [rec],
+            requester_node_id="node:requester:prod",
+            policy=DisclosurePolicy(),
+            since="garbage",
+        )
+
+
+async def test_membership_store_round_trips_stamped_record():
+    now = datetime(2026, 7, 8, 8, 0, 0, tzinfo=UTC)
+    t = MembershipTable()
+    rec = MemberRecord(node_id="n", manifest_url="https://x/m.json")
+    await t.upsert(admit(rec, now=now))
+    restored = await t.get("n")
+    assert restored is not None
+    wire = restored.model_dump(mode="json")
+    assert wire["last_refresh"] == "2026-07-08T08:00:00Z"
+    assert MemberRecord.model_validate(wire).last_refresh == now
 
 
 async def test_revoked_peer_is_never_eligible():

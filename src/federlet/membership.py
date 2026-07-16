@@ -96,27 +96,40 @@ class CooldownPolicy:
 DEFAULT_COOLDOWN_POLICY = CooldownPolicy()
 
 
-def admit(rec: MemberRecord, accepted_until: datetime | None = None) -> MemberRecord:
+def _touch(rec: MemberRecord, now: datetime | None) -> MemberRecord:
+    """Stamp the lifecycle-write timestamp read by ``since`` disclosure cursors."""
+
+    rec.last_refresh = now or utc_now()
+    return rec
+
+
+def admit(
+    rec: MemberRecord,
+    accepted_until: datetime | None = None,
+    now: datetime | None = None,
+) -> MemberRecord:
     """Mark a record admitted/active, clearing failure and cooldown state."""
 
     rec.state = PeerState.ACTIVE
     rec.accepted_until = accepted_until
     rec.failures = 0
     rec.cooldown_until = None
-    return rec
+    return _touch(rec, now)
 
 
-def set_state(rec: MemberRecord, state: PeerState) -> MemberRecord:
+def set_state(
+    rec: MemberRecord, state: PeerState, now: datetime | None = None
+) -> MemberRecord:
     rec.state = state
-    return rec
+    return _touch(rec, now)
 
 
-def record_success(rec: MemberRecord) -> MemberRecord:
+def record_success(rec: MemberRecord, now: datetime | None = None) -> MemberRecord:
     rec.failures = 0
     rec.cooldown_until = None
     if rec.state == PeerState.COOLDOWN:
         rec.state = PeerState.ACTIVE
-    return rec
+    return _touch(rec, now)
 
 
 def record_failure(
@@ -127,7 +140,7 @@ def record_failure(
     now = now or utc_now()
     rec.failures += 1
     rec.cooldown_until = now + policy.next_cooldown(rec.failures)
-    return rec
+    return _touch(rec, now)
 
 
 async def eligible_peers(
@@ -157,12 +170,44 @@ class MembershipTable:
         self._peers.pop(node_id, None)
 
 
+def parse_since_cursor(since: str | datetime) -> datetime:
+    """Normalize a ``since`` cursor to an aware UTC-comparable datetime.
+
+    Accepts an ISO-8601 string (``Z`` or offset) or an already-parsed datetime.
+    Raises ``ValueError`` on unparseable input or a naive datetime — callers
+    (e.g. an HTTP route) map that to a 400 rather than guessing a timezone.
+    """
+
+    if isinstance(since, str):
+        text = since.strip()
+        try:
+            since = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"invalid since cursor: {since!r}") from exc
+    if since.tzinfo is None:
+        raise ValueError("since cursor must be timezone-aware")
+    return since
+
+
+def _disclosed_after(rec: MemberRecord, since: datetime) -> bool:
+    """True if ``rec`` should be disclosed for the given ``since`` cursor.
+
+    Records missing ``last_refresh`` are included (disclose-not-hide): once
+    stamping is universal this only affects pre-migration records, and the set
+    converges to empty as they are restamped.
+    """
+
+    return rec.last_refresh is None or rec.last_refresh > since
+
+
 def disclose_members(
     members: list[MemberRecord],
     requester_node_id: str,
     policy: DisclosurePolicy,
+    since: str | datetime | None = None,
 ) -> list[MemberRef]:
     disclosure = policy.requester_disclosure.get(requester_node_id, policy.default)
+    cursor = parse_since_cursor(since) if since is not None else None
     return [
         MemberRef(
             node_id=rec.node_id,
@@ -172,7 +217,9 @@ def disclose_members(
             disclosure=disclosure,
         )
         for rec in members
-        if rec.is_eligible() and rec.node_id not in policy.denied
+        if rec.is_eligible()
+        and rec.node_id not in policy.denied
+        and (cursor is None or _disclosed_after(rec, cursor))
     ]
 
 
