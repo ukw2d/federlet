@@ -3435,6 +3435,86 @@ async def test_federation_node_lifecycle_lock_prevents_revocation_resurrection()
     assert store.deletes == [peer.node_id]
 
 
+async def test_admit_peer_does_not_resurrect_revoked_record():
+    """Re-admitting a REVOKED peer via admit_peer/introduce must not flip it back.
+
+    Revocation is sticky against re-admission: after a peer is revoked, the
+    introduce path (admit_peer -> _record_peer) must leave the record REVOKED,
+    and select_peers must not surface it.
+    """
+    issuer_key = generate_key()
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.admit_peer(peer)
+    notice = sign_model(
+        RevocationNotice(
+            federation_id="f",
+            revoked_node_id=peer.node_id,
+            reason="removed",
+            issued_at=datetime.now(UTC),
+            issuer="node:issuer:prod",
+        ),
+        issuer_key,
+        "issuer-k1",
+    )
+    await node.apply_revocation_notice(
+        notice,
+        trusted_issuer_keys={"issuer-k1": public_jwk(issuer_key)},
+        authorize=lambda n: True,
+    )
+    store.upserts.clear()
+
+    # Re-admission attempt (the introduce endpoint funnels through admit_peer).
+    decision = await node.admit_peer(peer)
+
+    assert decision.accepted  # policy still accepts the manifest...
+    rec = await node.membership_table.get(peer.node_id)
+    assert rec is not None
+    assert rec.state is PeerState.REVOKED  # ...but the record is not resurrected.
+    assert await node.select_peers() == []
+    # The revoked peer's manifest is not re-remembered into the cache/store.
+    assert peer.node_id not in node.peer_manifests
+    assert store.upserts == []
+
+
+async def test_record_peer_does_not_resurrect_revoked_record():
+    """Bootstrap re-admission funnels through _record_peer, the shared chokepoint.
+
+    bootstrap_from_seeds calls _record_peer for every accepted seed; the guard
+    there must preserve a prior REVOKED state and skip the manifest refresh.
+    """
+    peer = _discoverable_manifest(
+        generate_key(),
+        node_id="node:peer:prod",
+        manifest_url="https://peer.example/manifest.json",
+    )
+    store = FakeManifestStore()
+    node = _facade_node(manifest_store=store)
+    await node.membership_table.upsert(
+        set_state(
+            MemberRecord(
+                node_id=peer.node_id,
+                org_id=peer.org_id,
+                manifest_url="https://peer.example/manifest.json",
+            ),
+            PeerState.REVOKED,
+        )
+    )
+
+    await node._record_peer(peer, "https://peer.example/manifest.json")
+
+    rec = await node.membership_table.get(peer.node_id)
+    assert rec is not None
+    assert rec.state is PeerState.REVOKED
+    assert peer.node_id not in node.peer_manifests
+    assert store.upserts == []
+
+
 async def test_federation_node_apply_revocation_default_self_scoped_evicts():
     """Default authorize at the node level: a self-scoped notice evicts durably."""
 

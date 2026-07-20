@@ -325,6 +325,14 @@ class FederationNode:
 
     async def _record_peer(self, manifest: Manifest, manifest_url: str) -> None:
         async with self._lifecycle_lock:
+            existing = await self.membership_table.get(manifest.node_id)
+            if existing is not None and existing.state is PeerState.REVOKED:
+                # Revocation is sticky: a re-admission (configured-seed bootstrap
+                # or inbound introduce) must not resurrect a REVOKED record to
+                # ACTIVE. Skip the manifest cache refresh too — a revoked peer's
+                # manifest was evicted on revoke and shouldn't be re-remembered.
+                # REVOKED stays terminal until an operator clears the record.
+                return
             await self._remember_manifest(manifest)
             await self.membership_table.upsert(
                 admit(
